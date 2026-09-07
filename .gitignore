@@ -1,0 +1,17 @@
+# Build outputs
+build/
+mycc
+mycc.exe
+
+# Object files
+*.o
+
+# Executables produced by the test/showcase flow
+*.exe
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store

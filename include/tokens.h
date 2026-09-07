@@ -1,0 +1,52 @@
+#ifndef TOKENS_H
+#define TOKENS_H
+
+typedef enum {
+    TOKEN_EOF,
+    TOKEN_INT_LIT,
+    TOKEN_IDENT,
+    TOKEN_KEYWORD_INT,
+    TOKEN_KEYWORD_VOID,
+    TOKEN_KEYWORD_IF,
+    TOKEN_KEYWORD_ELSE,
+    TOKEN_KEYWORD_WHILE,
+    TOKEN_KEYWORD_RETURN,
+    TOKEN_KEYWORD_FOR,
+    TOKEN_PLUS,
+    TOKEN_MINUS,
+    TOKEN_STAR,
+    TOKEN_SLASH,
+    TOKEN_PERCENT,
+    TOKEN_PLUS_PLUS,
+    TOKEN_MINUS_MINUS,
+    TOKEN_PLUS_EQUAL,
+    TOKEN_MINUS_EQUAL,
+    TOKEN_STAR_EQUAL,
+    TOKEN_SLASH_EQUAL,
+    TOKEN_PERCENT_EQUAL,
+    TOKEN_BANG,
+    TOKEN_AMPERSAND_AMPERSAND,
+    TOKEN_PIPE_PIPE,
+    TOKEN_EQUALS_EQUALS,
+    TOKEN_BANG_EQUALS,
+    TOKEN_LESS,
+    TOKEN_LESS_EQUAL,
+    TOKEN_GREATER,
+    TOKEN_GREATER_EQUAL,
+    TOKEN_ASSIGN,
+    TOKEN_LPAREN,
+    TOKEN_RPAREN,
+    TOKEN_LBRACE,
+    TOKEN_RBRACE,
+    TOKEN_COMMA,
+    TOKEN_SEMICOLON
+} TokenType;
+
+typedef struct {
+    TokenType type;
+    char *value; /* owned; NULL for punctuation; freed on token advance */
+    int line;
+    int col;
+} Token;
+
+#endif /* TOKENS_H */

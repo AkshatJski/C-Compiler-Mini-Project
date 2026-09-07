@@ -1,0 +1,14 @@
+# Normalize line endings per platform
+* text=auto
+
+# Shell scripts must always be LF (WSL/bash compatibility)
+*.sh text eol=lf
+
+# Windows batch scripts work best with CRLF
+*.bat text eol=crlf
+
+# Binary build outputs / artifacts (never delta-compress)
+mycc binary
+mycc.exe binary
+*.exe binary
+*.o binary
