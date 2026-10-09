@@ -35,17 +35,6 @@ void *xcalloc(size_t count, size_t size)
     return p;
 }
 
-void *xrealloc(void *ptr, size_t size)
-{
-    void *p = realloc(ptr, size);
-    if (p == NULL) {
-        fprintf(stderr, "fatal: out of memory reallocating %lu bytes\n",
-                (unsigned long)size);
-        exit(EXIT_FAILURE);
-    }
-    return p;
-}
-
 char *xstrdup(const char *s)
 {
     size_t len = strlen(s);

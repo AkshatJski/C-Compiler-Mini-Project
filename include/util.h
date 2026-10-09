@@ -6,7 +6,6 @@
 /* Memory helpers that abort with a diagnostic instead of returning NULL. */
 void *xmalloc(size_t size);
 void *xcalloc(size_t count, size_t size);
-void *xrealloc(void *ptr, size_t size);
 char *xstrdup(const char *s);
 
 /* Centralized error reporting with file:line:col tracking. */

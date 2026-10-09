@@ -5,16 +5,20 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 
 - **[ ]** not started · **[~]** in progress · **[x]** done
 
+> **Status:** Phases 0, 1 (except the `int` width decision and multi-error
+> recovery), and Phase 2 are complete. The suite now has 11 positive tests and
+> 18 error/diagnostic tests.
+
 ---
 
 ## Phase 0 — Housekeeping & tooling
 
 - [x] Git repo + `.gitignore` (build artifacts, object files, editor cruft)
 - [x] Accurate `README.md` + this `ROADMAP.md`
-- [ ] CI (GitHub Actions): build + test matrix on Linux (gcc) and Windows
+- [x] CI (GitHub Actions): build + test matrix on Linux (gcc) and Windows
       (MinGW-w64 / MSYS2), gated on every push
-- [ ] `make clean` also removes the stale `src/*.o` objects; move objects into
-      a `build/` dir so the source tree stays clean
+- [x] `make clean` also removes the stale `src/*.o` objects; objects now build
+      into a `build/` dir so the source tree stays clean
 - [ ] Decide and document the official calling-convention posture
       (see Phase 4)
 
@@ -27,18 +31,18 @@ on both platforms automatically in CI.
 
 Make the language match real C semantics more closely without adding syntax.
 
-- [ ] Fix `for (int i = ...)`: the loop variable currently leaks into the
+- [x] Fix `for (int i = ...)`: the loop variable currently leaks into the
       enclosing scope; in C it is loop-local (two consecutive `for (int i...)`
       loops must not conflict)
-- [ ] Semantic check that a `main` function exists, giving a clean compiler
+- [x] Semantic check that a `main` function exists, giving a clean compiler
       diagnostic instead of a linker error
-- [ ] Abort cleanly on an unterminated `/* comment` instead of cascading bogus
+- [x] Abort cleanly on an unterminated `/* comment` instead of cascading bogus
       token errors
 - [ ] Decide the width of `int`: today it is 64-bit (`movq`/`long long`),
       unlike C's 32-bit `int`. Either shrink `int` to 32-bit (`movl`/`imull`,
       sign extension after every 64-bit op) or add a distinct `long` type and
       document the choice
-- [ ] Remove dead code: `scope_depth()`, `Symbol.is_param`,
+- [x] Remove dead code: `scope_depth()`, `Symbol.is_param`,
       `SYMBOL_TYPE_VOID`, `Scope.child`, `xrealloc`
 - [ ] Parse errors recover so more than one error is reported per run
 
@@ -49,15 +53,20 @@ missing `main`, unterminated comment, and multi-error recovery.
 
 ## Phase 2 — Language surface (control flow + data)
 
-- [ ] `break` and `continue` (with target-label bookkeeping in `codegen.c`)
-- [ ] `do-while` loops
-- [ ] `switch` / `case` / `default`
-- [ ] Integer literal formats: hex `0x...`, octal `0...`, `U`/`L` suffixes
-- [ ] `char` type (bytes stored/loaded with sign extension), `void` functions
-- [ ] `else if` spelling naturally (already works via nested `else` + `if`)
+- [x] `break` and `continue` (with target-label bookkeeping in `codegen.c`)
+- [x] `do-while` loops
+- [x] `switch` / `case` / `default`
+- [x] Integer literal formats: hex `0x...`, octal `0...`, `U`/`L` suffixes
+- [x] `char` type (bytes stored/loaded with sign extension), `void` functions
+- [x] `else if` spelling naturally (already works via nested `else` + `if`)
+- [x] Conditional `?:` operator, bitwise `& | ^ ~`, shifts `<< >>`, and the
+      matching compound assignments
+- [x] Globals with constant-folded initializers
 
-**Acceptance:** new self-checking test file `tests/06_control.c` and
-`tests/07_types.c`; all exit-code tests green.
+**Acceptance:** `tests/06_control_flow.c`, `tests/07_bitwise.c`,
+`tests/08_literals.c`, `tests/09_types_globals.c`, `tests/10_ternary.c`, and
+`tests/11_scope.c` (all exit-code self-checking) plus `tests/errors/*.c`
+diagnostics; all green.
 
 ---
 
@@ -71,8 +80,8 @@ missing `main`, unterminated comment, and multi-error recovery.
 - [ ] Function prototypes / forward declarations (formal `param decls`)
 - [ ] `unsigned` variants if `int` becomes 32-bit (Phase 1)
 
-**Acceptance:** `tests/08_pointers.c`, `tests/09_arrays.c`,
-`tests/10_structs.c`; a real `main` that reads/writes an array and sums it
+**Acceptance:** `tests/12_pointers.c`, `tests/13_arrays.c`,
+`tests/14_structs.c`; a real `main` that reads/writes an array and sums it
 via pointers. This phase proves the compiler can host real algorithms.
 
 ---

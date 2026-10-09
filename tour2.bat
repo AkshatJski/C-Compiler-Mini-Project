@@ -188,7 +188,7 @@ echo    src\codegen.c    ~420 lines   tree      -^> assembly
 echo    src\symtab.c     ~90 lines    the scope stack that backs it
 echo    src\dump.c       ~210 lines   powers --dump-tokens / --dump-ast
 echo.
-echo  Total: about 2,400 lines of C99. No Lex, no Yacc, no LLVM.
+echo  Total: about 3,500 lines of C99. No Lex, no Yacc, no LLVM.
 echo  Everything is hand-written, and you just watched all of it.
 echo.
 pause

@@ -6,24 +6,19 @@
 
 static Scope global_scope;
 static Scope *current_scope;
-static int g_scope_depth;
 
 void symtab_init(void)
 {
     global_scope.symbols = NULL;
     global_scope.parent = NULL;
-    global_scope.child = NULL;
     current_scope = &global_scope;
-    g_scope_depth = 0;
 }
 
 void scope_push(void)
 {
     Scope *scope = xcalloc(1, sizeof(Scope));
     scope->parent = current_scope;
-    current_scope->child = scope;
     current_scope = scope;
-    g_scope_depth++;
 }
 
 void scope_pop(void)
@@ -33,7 +28,6 @@ void scope_pop(void)
     }
     Scope *victim = current_scope;
     current_scope = victim->parent;
-    current_scope->child = NULL;
     Symbol *sym = victim->symbols;
     while (sym != NULL) {
         Symbol *next = sym->next;
@@ -42,15 +36,9 @@ void scope_pop(void)
         sym = next;
     }
     free(victim);
-    g_scope_depth--;
 }
 
-int scope_depth(void)
-{
-    return g_scope_depth;
-}
-
-Symbol *symbol_insert(const char *name, SymbolType type, int is_global)
+Symbol *symbol_insert(const char *name, TypeKind type, int is_global)
 {
     Symbol *sym = xcalloc(1, sizeof(Symbol));
     sym->name = xstrdup(name);
@@ -58,7 +46,6 @@ Symbol *symbol_insert(const char *name, SymbolType type, int is_global)
     sym->is_global = is_global;
     sym->stack_offset = 0;
     sym->is_function = 0;
-    sym->is_param = 0;
     sym->param_count = 0;
     sym->next = current_scope->symbols;
     current_scope->symbols = sym;

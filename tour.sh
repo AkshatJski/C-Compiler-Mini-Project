@@ -29,7 +29,7 @@ echo "=================================================================="
 echo
 echo "  A compiler turns human-readable code into the exact instructions"
 echo "  your CPU runs. When you type 'gcc hello.c', all of that happens"
-echo "  inside a giant black box. mycc does the same job in about 2,300"
+echo "  inside a giant black box. mycc does the same job in about 3,500"
 echo "  lines of plain C that you could read in an evening - and it shows"
 echo "  you every step along the way."
 echo
@@ -89,7 +89,7 @@ echo "  gcc's version also returns: $result"
 echo
 echo "  So mycc really is a compiler, not a toy. But notice the scale:"
 echo "  gcc is roughly 15 million lines of code written by thousands of"
-echo "  people over 35 years. mycc is about 2,300 lines you can fully"
+echo "  people over 35 years. mycc is about 3,500 lines you can fully"
 echo "  understand."
 step
 

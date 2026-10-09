@@ -9,6 +9,17 @@ mycc.exe
 # Executables produced by the test/showcase flow
 *.exe
 
+# Local engineering documentation (private, kept out of the repo).
+# User-facing docs (README.md, ROADMAP.md) stay tracked and pushed.
+README.docs
+ROADMAP.docs
+decision.md
+Flow.md
+learn.md
+decision.docs
+Flow.docs
+learn.docs
+
 # Editor / OS cruft
 .vscode/
 .idea/

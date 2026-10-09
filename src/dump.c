@@ -45,6 +45,16 @@ static const char *op_name(int op)
         return "/";
     case OP_MOD:
         return "%";
+    case OP_BIT_AND:
+        return "&";
+    case OP_BIT_OR:
+        return "|";
+    case OP_BIT_XOR:
+        return "^";
+    case OP_SHL:
+        return "<<";
+    case OP_SHR:
+        return ">>";
     case OP_AND:
         return "&&";
     case OP_OR:
@@ -67,6 +77,19 @@ static const char *op_name(int op)
 }
 
 static void dump_node(const ASTNode *node, int depth, FILE *out);
+
+static const char *type_name(int vtype)
+{
+    switch (vtype) {
+    case TYPE_INT:
+        return "int";
+    case TYPE_CHAR:
+        return "char";
+    case TYPE_VOID:
+        return "void";
+    }
+    return "?";
+}
 
 static void dump_chain(const ASTNode *node, int depth, FILE *out)
 {
@@ -99,18 +122,20 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         fprintf(out, "PROGRAM");
         break;
     case AST_FUNC_DECL:
-        fprintf(out, "FUNCTION %s  (frame %d bytes)", node->name,
-                node->frame_size);
+        fprintf(out, "FUNCTION %s : %s  (frame %d bytes)", node->name,
+                type_name(node->vtype), node->frame_size);
         break;
     case AST_PARAM:
-        fprintf(out, "PARAM %s  @ %d(%%rbp)", node->name, node->stack_offset);
+        fprintf(out, "PARAM %s : %s  @ %d(%%rbp)", node->name,
+                type_name(node->vtype), node->stack_offset);
         break;
     case AST_VAR_DECL:
         if (node->is_global) {
-            fprintf(out, "GLOBAL %s  (.data, zero-initialized)", node->name);
+            fprintf(out, "GLOBAL %s : %s  (.data, init %lld)", node->name,
+                    type_name(node->vtype), node->value);
         } else {
-            fprintf(out, "LOCAL %s  @ %d(%%rbp)", node->name,
-                    node->stack_offset);
+            fprintf(out, "LOCAL %s : %s  @ %d(%%rbp)", node->name,
+                    type_name(node->vtype), node->stack_offset);
         }
         break;
     case AST_ASSIGN:
@@ -122,8 +147,26 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_WHILE:
         fprintf(out, "WHILE");
         break;
+    case AST_DO_WHILE:
+        fprintf(out, "DO-WHILE");
+        break;
     case AST_FOR:
         fprintf(out, "FOR");
+        break;
+    case AST_SWITCH:
+        fprintf(out, "SWITCH");
+        break;
+    case AST_CASE:
+        fprintf(out, "CASE %lld", node->value);
+        break;
+    case AST_DEFAULT:
+        fprintf(out, "DEFAULT");
+        break;
+    case AST_BREAK:
+        fprintf(out, "BREAK");
+        break;
+    case AST_CONTINUE:
+        fprintf(out, "CONTINUE");
         break;
     case AST_RETURN:
         fprintf(out, "RETURN");
@@ -134,11 +177,14 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_BINARY_OP:
         fprintf(out, "BINOP %s", op_name(node->op));
         break;
+    case AST_TERNARY:
+        fprintf(out, "TERNARY ?:");
+        break;
     case AST_POSTFIX:
         fprintf(out, "POSTFIX %s", node->op == OP_ADD ? "++" : "--");
         break;
     case AST_VAR_REF:
-        fprintf(out, "VAR %s", node->name);
+        fprintf(out, "VAR %s : %s", node->name, type_name(node->vtype));
         break;
     case AST_INT_LIT:
         fprintf(out, "INT %lld", node->value);
@@ -174,11 +220,24 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         dump_label("cond", node->cond, d, out);
         dump_label("body", node->body, d, out);
         break;
+    case AST_DO_WHILE:
+        dump_label("body", node->body, d, out);
+        dump_label("cond", node->cond, d, out);
+        break;
     case AST_FOR:
         dump_label("init", node->left, d, out);
         dump_label("cond", node->cond, d, out);
         dump_label("step", node->right, d, out);
         dump_label("body", node->body, d, out);
+        break;
+    case AST_SWITCH:
+        dump_label("expr", node->cond, d, out);
+        dump_chain(node->body, d, out);
+        break;
+    case AST_CASE:
+    case AST_DEFAULT:
+    case AST_BREAK:
+    case AST_CONTINUE:
         break;
     case AST_RETURN:
         dump_label("expr", node->left, d, out);
@@ -189,6 +248,11 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_BINARY_OP:
         dump_node(node->left, d, out);
         dump_node(node->right, d, out);
+        break;
+    case AST_TERNARY:
+        dump_label("cond", node->cond, d, out);
+        dump_label("then", node->left, d, out);
+        dump_label("else", node->right, d, out);
         break;
     case AST_POSTFIX:
         dump_node(node->left, d, out);

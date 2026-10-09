@@ -33,7 +33,7 @@ Lex, Yacc, or LLVM — everything is plain C.
 my_c_compiler/
 ├── Makefile            Build + test automation (Linux / WSL)
 ├── build.bat           Build script (Windows: compiles mycc.exe)
-├── test.bat            Test script (Windows: runs the 5 tests)
+├── test.bat            Test script (Windows: positive + error suites)
 ├── showcase.bat        Demo script (Windows: example.c -> run, exit 197)
 ├── tour.bat            Guided narrated demo (Windows, press any key)
 ├── tour.sh             Guided narrated demo (Linux / WSL)
@@ -71,7 +71,14 @@ my_c_compiler/
 │   ├── 02_conditionals.c if/else, comparisons
 │   ├── 03_loops.c        while and for loops
 │   ├── 04_functions.c    functions, params, recursion, globals
-│   └── 05_advanced.c     && || !, ++/--, compound assignment, scoping
+│   ├── 05_advanced.c     && || !, ++/--, compound assignment, scoping
+│   ├── 06_control_flow.c do-while, switch/case/default, break, continue
+│   ├── 07_bitwise.c      & | ^ ~ << >>, precedence, compound forms
+│   ├── 08_literals.c     hex/octal literals, suffixes, char constants
+│   ├── 09_types_globals.c char type, global initializers, void, implicit 0
+│   ├── 10_ternary.c      the conditional ?: operator
+│   ├── 11_scope.c        for-init scoping, shadowing, nested blocks
+│   └── errors/           Programs that must be rejected, with EXPECT-ERROR
 ├── mycc                The compiled compiler binary (Linux build result)
 └── mycc.exe            The compiled compiler binary (Windows build result)
 ```
@@ -113,57 +120,80 @@ my_c_compiler/
 Everything below is supported by the compiler.
 
 ### Data
-- A single integer type: `int` (all values are 64-bit signed).
-- Integer literals, e.g. `0`, `42`, `1000`.
+- `int` — all values are 64-bit signed.
+- `char` — one byte, signed: stored with `movb` and loaded with sign
+  extension, so `char c = 200;` then reads back as `-56`.
+- `void` — only as a function return type (functions with side effects).
+- Integer literals in decimal (`42`), hexadecimal (`0x2A`), and octal
+  (`052`), with optional `u`/`l` suffixes (e.g. `42u`, `0xFFL`).
+- Character constants with escapes: `'A'`, `'\n'`, `'\t'`, `'\0'`,
+  `'\\'`, `'\''`, and hex escapes like `'\x41'`.
 
 ### Operators (with correct precedence)
 | Group                | Operators                          |
 |----------------------|------------------------------------|
 | Assignment           | `=  +=  -=  *=  /=  %=`            |
+| Compound bitwise     | `&=  \|=  ^=  <<=  >>=`            |
+| Conditional          | `?:`                               |
 | Logical OR           | `\|\|`                             |
 | Logical AND          | `&&`                               |
+| Bitwise OR           | `\|`                               |
+| Bitwise XOR          | `^`                                |
+| Bitwise AND          | `&`                                |
 | Equality             | `==  !=`                           |
 | Relational           | `<  <=  >  >=`                     |
+| Shift                | `<<  >>`                           |
 | Additive             | `+  -`                             |
 | Multiplicative       | `*  /  %`                          |
-| Unary                | `-  +  !`                          |
+| Unary                | `-  +  !  ~`                       |
+| Prefix               | `++x  --x`                         |
 | Postfix              | `x++  x--`                         |
 
 - `&&` and `||` use **short-circuit evaluation**: the right operand is only
   evaluated if the left operand does not already decide the result. This
   means `0 && (1 / 0)` is safe (no division by zero).
+- `?:` is right-associative: `a ? b : c ? d : e` means `a ? b : (c ? d : e)`.
 - `%` follows C semantics: the result has the sign of the dividend
-  (truncated toward zero).
-- `!x`, `-x`, `x += y`, and `++x` are implemented by *desugaring*: the
+  (truncated toward zero); `>>` is arithmetic (sign-filling) on `int`.
+- `!x`, `-x`, `~x`, `x += y`, and `++x` are implemented by *desugaring*: the
   parser rewrites them into simpler forms the code generator already knows
   (see section 3).
 
 ### Statements
 - Blocks `{ ... }`
 - Local variable declarations with or without initializers, e.g.
-  `int a;` and `int a = 5;`
+  `int a;`, `int a = 5;`, and `char c = 'x';`
 - Multiple declarators: `int a, b = 3, c;`
 - `if (cond) stmt` and `if (cond) stmt else stmt`
 - `while (cond) stmt`
+- `do stmt while (cond);` — runs the body at least once
 - `for (init; cond; step) stmt` — `init` may be a declaration
   (`for (int i = 0; ...)`), an expression, or empty
+- `switch (expr) { case K: ... default: ... }` with C fallthrough
+- `break;` (leaves the innermost loop or switch) and `continue;` (next
+  iteration of the innermost loop)
 - `return expr;` and `return;`
 
 ### Functions
-- Global functions returning `int`, with `void` or empty parameter lists.
+- Global functions returning `int` or `void`, with `void` or empty parameter
+  lists. (`char` return types are not supported — use `int`.)
 - Up to **6 parameters** (the x86-64 register-argument limit we support).
 - **Recursion** (functions call themselves safely).
 - **Forward references**: a function may call another function that is
   defined later in the file.
 - Nested function calls, and calls inside expressions:
   `add(mul(a, b), divq(a, b))`.
+- A non-`void` function that falls off its end returns `0` (as in C's
+  implicit `return 0` for `main`, extended to all functions here).
 
 ### Variables and scope
-- Global variables (zero-initialized, placed in `.data`).
+- Global variables, including ones with **constant-folded initializers**
+  (`int g = 2 * 3 + 4;`); uninitialized globals are zero-filled in `.data`.
 - Local variables (stack-allocated in the function's own frame).
 - Proper **block scoping**: an inner block may declare a variable with the
   same name as one outside it (shadowing), and the outer variable is
-  untouched after the block ends.
+  untouched after the block ends. A `for (int i = ...)` declaration is
+  loop-local and does not leak into the enclosing scope.
 
 ### Comments
 - `// line comment` and `/* block comment */`
@@ -197,8 +227,10 @@ prog.c: compilation aborted during semantic analysis
   produces a normal `0`/`1` value.
 
 - **Division and modulo** use the signed divide instruction: `cqto` sign
-  extends the dividend into `%rdx:%rax`, `idivq %rbx` computes quotient in
+  extends the dividend into `%rdx:%rax`, `idivq %r10` computes quotient in
   `%rax` and remainder in `%rdx`. `%` simply moves `%rdx` into `%rax`.
+  (`%r10` is a caller-saved scratch register, so this does not clobber a
+  callee-saved register without preserving it.)
 
 - **Short-circuit `&&` / `||`** are compiled with branch labels so the right
   operand is skipped when the left decides the result.
@@ -224,7 +256,21 @@ prog.c: compilation aborted during semantic analysis
   is being checked, and shadowing works naturally.
 
 - **Globals** live in the `.data` section and are accessed with RIP-relative
-  addressing (`movq g_count(%rip), %rax`).
+  addressing (`movq g_count(%rip), %rax`). Their initializers are evaluated
+  at compile time by a small constant folder, which emits `.quad` for `int`
+  and `.byte` for `char`; anything non-constant is reported as an error.
+
+- **`char`** is one byte. Stores emit `movb` (truncating to the low byte) and
+  loads emit `movsbq` (sign-extending), so a stored `200` reads back as `-56`
+  — matching a signed `char` on both Linux and Windows.
+
+- **`switch` / `break` / `continue`.** Codegen keeps two stacks of
+  target labels: one for `break` (pushed by loops *and* `switch`) and one for
+  `continue` (pushed only by loops). `break` jumps to the top of the break
+  stack and `continue` to the top of the continue stack, so a `break` inside
+  a `switch` nested in a loop leaves only the switch, while `continue` inside
+  a switch continues the enclosing loop. A `switch` compiles to a chain of
+  `cmpq`/`je` against each `case` value plus a jump to `default`.
 
 ---
 
@@ -290,7 +336,7 @@ building (see section 6B).
 
 Open **PowerShell** in the project folder:
 ```
-cd "C:\Folder D\C Compiler Test THROUGH OPENCODE\my_c_compiler"
+cd "C:\Folder D\C_Compiler_Test_MiniProject\my_c_compiler"
 ```
 
 (You can also open the folder in File Explorer and type `powershell` in the
@@ -323,16 +369,20 @@ set CC=C:\msys64\ucrt64\bin\gcc.exe
 .\test.bat
 ```
 
-This compiles every `tests\*.c`, assembles it into an `.exe`, runs it, and
-compares the exit code with the `EXPECT:` marker in the file. **Expected
-output:**
+This compiles every `tests\*.c` (positive tests), assembles each into an
+`.exe`, runs it, and compares the exit code with the `EXPECT:` marker in the
+file. It then runs every `tests\errors\*.c` and checks that `mycc` rejects it
+with the diagnostic named by `EXPECT-ERROR:`. **Expected output (abridged):**
 
 ```
 PASS: tests\01_arithmetic.c (exit 0)
 PASS: tests\02_conditionals.c (exit 0)
-PASS: tests\03_loops.c (exit 0)
-PASS: tests\04_functions.c (exit 0)
-PASS: tests\05_advanced.c (exit 0)
+...
+PASS: tests\11_scope.c (exit 0)
+PASS: tests\errors\break_outside.c (rejected)
+...
+PASS: tests\errors\void_variable.c (rejected)
+
 All tests passed
 ```
 
@@ -420,7 +470,7 @@ Your prompt should now end in `$` (not `PS`). The Windows folder
 `C:\Folder D\...` is visible inside WSL at `/mnt/c/Folder D/...`. Now run:
 
 ```
-cd "/mnt/c/Folder D/C Compiler Test THROUGH OPENCODE/my_c_compiler"
+cd "/mnt/c/Folder D/C_Compiler_Test_MiniProject/my_c_compiler"
 export PATH=/tmp/opencode/root/usr/bin:$PATH
 export LD_LIBRARY_PATH=/tmp/opencode/root/usr/lib/x86_64-linux-gnu
 ```
@@ -432,7 +482,7 @@ Sanity check:
 ```
 ls
 ```
-Expected: `Makefile  example.c  include  instructions.md  mycc  src  tests`
+Expected: `Makefile  build.bat  build  demos  example.c  include  instructions.md  mycc  README.md  ROADMAP.md  src  test.bat  tests`
 
 ### 6.2 Build the compiler
 
@@ -452,14 +502,16 @@ Expected: compile lines and no error messages.
 make CC=/tmp/opencode/gccwrap test
 ```
 
-Expected output:
+Expected output (abridged):
 
 ```
 PASS: tests/01_arithmetic.c (exit 0)
 PASS: tests/02_conditionals.c (exit 0)
-PASS: tests/03_loops.c (exit 0)
-PASS: tests/04_functions.c (exit 0)
-PASS: tests/05_advanced.c (exit 0)
+...
+PASS: tests/11_scope.c (exit 0)
+PASS: tests/errors/break_outside.c (rejected)
+...
+PASS: tests/errors/void_variable.c (rejected)
 All tests passed
 ```
 
@@ -541,6 +593,7 @@ Expected:
 /* This is a valid mycc program. */
 
 int g_count;                    /* global (zero-initialized) */
+char g_last = 'A';              /* global with a folded initializer */
 
 int is_prime(int n) {           /* function, one parameter */
     if (n < 2) return 0;
@@ -553,6 +606,7 @@ int is_prime(int n) {           /* function, one parameter */
 int main(void) {
     int a, b = 10;              /* multiple declarators */
     int s = 0;
+    char c = 0x41;              /* char holds one byte: 'A' */
     a = 1;
     a += 2;                     /* compound assignment: a = 3 */
     a++;                        /* postfix increment: a = 4 */
@@ -564,17 +618,24 @@ int main(void) {
     for (a = 0; a < 5; a++) {   /* for with expression init */
         s += 2;
     }
+    switch (s & 1) {            /* switch + bitwise + fallthrough */
+        case 0: s += 1;         /* (not reached here) */
+        default: s += 0;
+    }
+    do { s += (c == 'A') ? 0 : 100; } while (0);   /* do-while + ?: */
     g_count++;
     return s;                   /* returns 11 */
 }
 ```
 
 ### Not supported (by design)
-- No other types: no `char`, `float`, `long`, structs, pointers, arrays.
-- No `break` / `continue` inside loops.
-- No `do...while`, `switch`, or `else if` keyword (write `else { if ... }`).
+- No `float`/`double`, `long`/`short`, `unsigned`, structs, pointers,
+  arrays, or `enum`/`typedef`.
+- Function return type must be `int` (or `void`); `char` returns are rejected.
 - No `#include`, no preprocessor, no string literals, no printing.
   Programs communicate results through their **exit code** (`return`).
+- `switch` supports integer/enum-style cases only — no `range` cases, and
+  `case` labels must be compile-time constants.
 
 ---
 
@@ -601,21 +662,21 @@ int main(void) {
 **Windows (PowerShell)** — fastest path:
 
 ```
-cd "C:\Folder D\C Compiler Test THROUGH OPENCODE\my_c_compiler"
+cd "C:\Folder D\C_Compiler_Test_MiniProject\my_c_compiler"
 .\build.bat
-.\test.bat        # all 5 tests should pass
+.\test.bat        # all tests should pass
 .\showcase.bat    # should print "The program returned: 197"
 ```
 
 **Linux (WSL)**:
 
 ```
-cd "/mnt/c/Folder D/C Compiler Test THROUGH OPENCODE/my_c_compiler"
+cd "/mnt/c/Folder D/C_Compiler_Test_MiniProject/my_c_compiler"
 export PATH=/tmp/opencode/root/usr/bin:$PATH
 export LD_LIBRARY_PATH=/tmp/opencode/root/usr/lib/x86_64-linux-gnu
 make clean
 make CC=/tmp/opencode/gccwrap
-make CC=/tmp/opencode/gccwrap test      # all 5 tests should pass
+make CC=/tmp/opencode/gccwrap test      # all tests should pass
 ./mycc example.c -o /tmp/opencode/demo.s
 /tmp/opencode/gccwrap -no-pie -o /tmp/opencode/demo /tmp/opencode/demo.s
 /tmp/opencode/demo
@@ -675,7 +736,7 @@ stages** using the new dump flags:
 5. **Stage 4, codegen**: `mycc demos\simple.c` prints the assembly; walk
    the frame setup, the `push/pop` expression engine, and `call`.
 6. End to end: `example.c` → 197, plus the full test suite, then a
-   by-file line count of the ~2,400-line hand-written compiler.
+   by-file line count of the ~3,500-line hand-written compiler.
 
 Great talking point: the same tree you can print with `--dump-ast` is
 exactly what the code generator walks to emit assembly.
@@ -683,7 +744,7 @@ exactly what the code generator walks to emit assembly.
 ### The one-line explanations
 
 - "A compiler turns readable code into CPU instructions. gcc does this
-  inside a black box; mycc is ~2,300 lines of C that shows you every step."
+  inside a black box; mycc is ~3,500 lines of C that shows you every step."
 - "mycc emits **exactly** what you write — one instruction per operation.
   gcc is an optimizer that rewrites your program until it no longer looks
   like your source. For learning, readable wins; for production, gcc wins."
@@ -697,7 +758,7 @@ exactly what the code generator walks to emit assembly.
   "print" by their exit code. `mycc.exe demos\loop.c -o build\loop.s`,
   then `gcc -o build\loop.exe build\loop.s` and run it → `%errorlevel%`
   is `55`.
-- **Read the whole compiler**: `src/` is ~2,370 lines across 8 files.
+- **Read the whole compiler**: `src/` is ~3,500 lines across 8 files.
   `src/codegen.c` is the shortest path to "aha" — it is just a walk over
   the syntax tree emitting instructions.
 - **Catch a mistake live**: feed mycc a broken program and show the
