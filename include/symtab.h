@@ -3,17 +3,21 @@
 
 #include "ast.h"
 
-typedef struct Symbol {
+typedef struct Symbol
+{
     char *name;
-    TypeKind type;     /* variable/parameter type, or function return type */
-    int stack_offset;  /* local and parameter slots: -off(%rbp); globals: 0 */
+    Type *type;
+    /* variable/parameter type, or function return type */
+    int stack_offset; /* local and parameter slots: -off(%rbp); globals: 0 */
     int is_global;
     int is_function;
+    int is_defined;
     int param_count;
     struct Symbol *next;
 } Symbol;
 
-typedef struct Scope {
+typedef struct Scope
+{
     Symbol *symbols;
     struct Scope *parent;
 } Scope;
@@ -21,8 +25,9 @@ typedef struct Scope {
 void symtab_init(void);
 void scope_push(void);
 void scope_pop(void);
-Symbol *symbol_insert(const char *name, TypeKind type, int is_global);
+Symbol *symbol_insert(const char *name, Type *type, int is_global);
 Symbol *symbol_lookup(const char *name);
 Symbol *symbol_lookup_current(const char *name);
-
+void struct_register(const char *tag, Type *type);
+Type *struct_lookup(const char *tag);
 #endif /* SYMTAB_H */

@@ -1,7 +1,8 @@
 #ifndef TOKENS_H
 #define TOKENS_H
 
-typedef enum {
+typedef enum
+{
     TOKEN_EOF,
     TOKEN_INT_LIT,
     TOKEN_CHAR_LIT,
@@ -20,6 +21,7 @@ typedef enum {
     TOKEN_KEYWORD_BREAK,
     TOKEN_KEYWORD_CONTINUE,
     TOKEN_KEYWORD_RETURN,
+    TOKEN_KEYWORD_STRUCT,
     TOKEN_PLUS,
     TOKEN_MINUS,
     TOKEN_STAR,
@@ -59,11 +61,16 @@ typedef enum {
     TOKEN_RPAREN,
     TOKEN_LBRACE,
     TOKEN_RBRACE,
+    TOKEN_LBRACKET,
+    TOKEN_RBRACKET,
     TOKEN_COMMA,
-    TOKEN_SEMICOLON
+    TOKEN_SEMICOLON,
+    TOKEN_DOT,
+    TOKEN_ARROW
 } TokenType;
 
-typedef struct {
+typedef struct
+{
     TokenType type;
     char *value; /* owned; NULL for punctuation; freed on token advance */
     int line;

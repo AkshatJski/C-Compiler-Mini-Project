@@ -1,27 +1,17 @@
 @echo off
-rem ============================================================
-rem  test.bat - runs the mycc test suite on Windows
-rem
-rem  Positive tests (tests\*.c):
-rem     1. compile with mycc.exe             (mycc.exe --target=windows)
-rem     2. assemble+link with MinGW gcc      (build\<name>.exe)
-rem     3. run and compare the exit code with the EXPECT: marker
-rem
-rem  Error tests (tests\errors\*.c):
-rem     mycc must exit 1 and print the diagnostic named by EXPECT-ERROR:
-rem
-rem  Requirements: mycc.exe (run build.bat first) and MinGW gcc.
-rem  Uses gcc from your PATH; auto-detects MSYS2 UCRT64 / w64devkit.
-rem  Or set CC to the full path of your gcc.
-rem ============================================================
 setlocal enabledelayedexpansion
+set "PATH=C:\Windows\System32;C:\Windows;%PATH%"
+
 if "%CC%"=="" (
-    where gcc >nul 2>&1
-    if errorlevel 1 (
-        if exist C:\msys64\ucrt64\bin\gcc.exe set "PATH=C:\msys64\ucrt64\bin;%PATH%"
-        if exist C:\w64devkit\bin\gcc.exe    set "PATH=C:\w64devkit\bin;%PATH%"
+    if exist C:\msys64\ucrt64\bin\gcc.exe (
+        set "CC=C:\msys64\ucrt64\bin\gcc.exe"
+    ) else if exist C:\msys64\mingw64\bin\gcc.exe (
+        set "CC=C:\msys64\mingw64\bin\gcc.exe"
+    ) else if exist C:\w64devkit\bin\gcc.exe (
+        set "CC=C:\w64devkit\bin\gcc.exe"
+    ) else (
+        set "CC=gcc"
     )
-    set CC=gcc
 )
 
 if not exist mycc.exe (
@@ -40,11 +30,11 @@ if "%FAILED%"=="1" (
     echo Some tests FAILED
     exit /b 1
 )
+
 echo.
 echo All tests passed
 exit /b 0
 
-rem ------------------------------------------------------------
 :positive
 set "T=%~1"
 set "EXPECTED="
@@ -83,7 +73,6 @@ if not "!ACTUAL!"=="%EXPECTED%" (
 )
 goto :eof
 
-rem ------------------------------------------------------------
 :error
 set "T=%~1"
 set "EXPECTED="

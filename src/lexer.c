@@ -26,7 +26,8 @@ static char peek(const Lexer *lexer)
 
 static char peek_next(const Lexer *lexer)
 {
-    if (lexer->source[lexer->pos + 1] == '\0') {
+    if (lexer->source[lexer->pos + 1] == '\0')
+    {
         return '\0';
     }
     return lexer->source[lexer->pos + 1];
@@ -35,10 +36,13 @@ static char peek_next(const Lexer *lexer)
 static char advance(Lexer *lexer)
 {
     char c = lexer->source[lexer->pos++];
-    if (c == '\n') {
+    if (c == '\n')
+    {
         lexer->line++;
         lexer->col = 1;
-    } else {
+    }
+    else
+    {
         lexer->col++;
     }
     return c;
@@ -56,22 +60,31 @@ static Token make_token(TokenType type, char *value, int line, int col)
 
 static void skip_trivia(Lexer *lexer)
 {
-    for (;;) {
+    for (;;)
+    {
         char c = peek(lexer);
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        {
             advance(lexer);
-        } else if (c == '/' && peek_next(lexer) == '/') {
-            while (!at_end(lexer) && peek(lexer) != '\n') {
+        }
+        else if (c == '/' && peek_next(lexer) == '/')
+        {
+            while (!at_end(lexer) && peek(lexer) != '\n')
+            {
                 advance(lexer);
             }
-        } else if (c == '/' && peek_next(lexer) == '*') {
+        }
+        else if (c == '/' && peek_next(lexer) == '*')
+        {
             int start_line = lexer->line;
             int start_col = lexer->col;
             advance(lexer); /* '/' */
             advance(lexer); /* '*' */
             int closed = 0;
-            while (!at_end(lexer)) {
-                if (peek(lexer) == '*' && peek_next(lexer) == '/') {
+            while (!at_end(lexer))
+            {
+                if (peek(lexer) == '*' && peek_next(lexer) == '/')
+                {
                     advance(lexer);
                     advance(lexer);
                     closed = 1;
@@ -79,11 +92,14 @@ static void skip_trivia(Lexer *lexer)
                 }
                 advance(lexer);
             }
-            if (!closed) {
+            if (!closed)
+            {
                 report_error(start_line, start_col, "unterminated block comment");
                 return;
             }
-        } else {
+        }
+        else
+        {
             return;
         }
     }
@@ -94,7 +110,8 @@ static Token lex_ident_or_keyword(Lexer *lexer)
     int start_line = lexer->line;
     int start_col = lexer->col;
     size_t start = lexer->pos;
-    while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_') {
+    while (isalnum((unsigned char)peek(lexer)) || peek(lexer) == '_')
+    {
         advance(lexer);
     }
     size_t len = lexer->pos - start;
@@ -102,7 +119,8 @@ static Token lex_ident_or_keyword(Lexer *lexer)
     memcpy(text, lexer->source + start, len);
     text[len] = '\0';
 
-    struct Keyword {
+    struct Keyword
+    {
         const char *word;
         TokenType type;
     };
@@ -121,11 +139,14 @@ static Token lex_ident_or_keyword(Lexer *lexer)
         {"break", TOKEN_KEYWORD_BREAK},
         {"continue", TOKEN_KEYWORD_CONTINUE},
         {"return", TOKEN_KEYWORD_RETURN},
+        {"struct", TOKEN_KEYWORD_STRUCT},
     };
 
     TokenType type = TOKEN_IDENT;
-    for (size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
-        if (strcmp(text, keywords[i].word) == 0) {
+    for (size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++)
+    {
+        if (strcmp(text, keywords[i].word) == 0)
+        {
             type = keywords[i].type;
             break;
         }
@@ -145,25 +166,32 @@ static Token lex_number(Lexer *lexer)
     size_t start = lexer->pos;
 
     if (peek(lexer) == '0' &&
-        (peek_next(lexer) == 'x' || peek_next(lexer) == 'X')) {
+        (peek_next(lexer) == 'x' || peek_next(lexer) == 'X'))
+    {
         advance(lexer); /* '0' */
         advance(lexer); /* 'x' */
-        if (!isxdigit((unsigned char)peek(lexer))) {
+        if (!isxdigit((unsigned char)peek(lexer)))
+        {
             report_error(start_line, start_col,
                          "malformed hexadecimal literal");
         }
-        while (isxdigit((unsigned char)peek(lexer))) {
+        while (isxdigit((unsigned char)peek(lexer)))
+        {
             advance(lexer);
         }
-    } else {
-        while (isdigit((unsigned char)peek(lexer))) {
+    }
+    else
+    {
+        while (isdigit((unsigned char)peek(lexer)))
+        {
             advance(lexer);
         }
     }
     /* Optional integer suffix (U / L / UL / LL / ULL in any reasonably
      * ordered spelling); the suffix is dropped from the stored text. */
     size_t digits_end = lexer->pos;
-    while (is_num_suffix(peek(lexer))) {
+    while (is_num_suffix(peek(lexer)))
+    {
         advance(lexer);
     }
 
@@ -179,7 +207,8 @@ static Token lex_number(Lexer *lexer)
 static int read_escape(Lexer *lexer)
 {
     char c = advance(lexer);
-    switch (c) {
+    switch (c)
+    {
     case 'n':
         return '\n';
     case 't':
@@ -202,17 +231,20 @@ static int read_escape(Lexer *lexer)
         return '\'';
     case '"':
         return '"';
-    case 'x': {
+    case 'x':
+    {
         int value = 0;
         int digits = 0;
-        while (isxdigit((unsigned char)peek(lexer))) {
+        while (isxdigit((unsigned char)peek(lexer)))
+        {
             char h = advance(lexer);
             value = value * 16 +
                     (isdigit((unsigned char)h) ? h - '0'
                                                : (tolower((unsigned char)h) - 'a' + 10));
             digits++;
         }
-        if (digits == 0) {
+        if (digits == 0)
+        {
             report_error(lexer->line, lexer->col, "\\x used with no digits");
         }
         return value;
@@ -230,19 +262,27 @@ static Token lex_char_literal(Lexer *lexer)
     advance(lexer); /* opening ' */
 
     int value;
-    if (peek(lexer) == '\'') {
+    if (peek(lexer) == '\'')
+    {
         report_error(start_line, start_col, "empty character literal");
         value = 0;
-    } else if (peek(lexer) == '\\') {
+    }
+    else if (peek(lexer) == '\\')
+    {
         advance(lexer); /* backslash */
         value = read_escape(lexer);
-    } else {
+    }
+    else
+    {
         value = (unsigned char)advance(lexer);
     }
 
-    if (peek(lexer) == '\'') {
+    if (peek(lexer) == '\'')
+    {
         advance(lexer); /* closing ' */
-    } else {
+    }
+    else
+    {
         report_error(start_line, start_col, "unterminated character literal");
     }
 
@@ -254,7 +294,8 @@ static Token lex_char_literal(Lexer *lexer)
 Token lexer_next_token(Lexer *lexer)
 {
     skip_trivia(lexer);
-    if (at_end(lexer)) {
+    if (at_end(lexer))
+    {
         return make_token(TOKEN_EOF, NULL, lexer->line, lexer->col);
     }
 
@@ -262,78 +303,99 @@ Token lexer_next_token(Lexer *lexer)
     int col = lexer->col;
     char c = peek(lexer);
 
-    if (isalpha((unsigned char)c) || c == '_') {
+    if (isalpha((unsigned char)c) || c == '_')
+    {
         return lex_ident_or_keyword(lexer);
     }
-    if (isdigit((unsigned char)c)) {
+    if (isdigit((unsigned char)c))
+    {
         return lex_number(lexer);
     }
-    if (c == '\'') {
+    if (c == '\'')
+    {
         return lex_char_literal(lexer);
     }
 
     advance(lexer);
-    switch (c) {
+    switch (c)
+    {
     case '+':
-        if (peek(lexer) == '+') {
+        if (peek(lexer) == '+')
+        {
             advance(lexer);
             return make_token(TOKEN_PLUS_PLUS, NULL, line, col);
         }
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_PLUS_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_PLUS, NULL, line, col);
     case '-':
-        if (peek(lexer) == '-') {
+        if (peek(lexer) == '-')
+        {
             advance(lexer);
             return make_token(TOKEN_MINUS_MINUS, NULL, line, col);
         }
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_MINUS_EQUAL, NULL, line, col);
         }
+        if (peek(lexer) == '>')
+        {
+            advance(lexer);
+            return make_token(TOKEN_ARROW, NULL, line, col);
+        }
         return make_token(TOKEN_MINUS, NULL, line, col);
     case '*':
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_STAR_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_STAR, NULL, line, col);
     case '/':
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_SLASH_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_SLASH, NULL, line, col);
     case '%':
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_PERCENT_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_PERCENT, NULL, line, col);
     case '&':
-        if (peek(lexer) == '&') {
+        if (peek(lexer) == '&')
+        {
             advance(lexer);
             return make_token(TOKEN_AMPERSAND_AMPERSAND, NULL, line, col);
         }
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_AMPERSAND_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_AMPERSAND, NULL, line, col);
     case '|':
-        if (peek(lexer) == '|') {
+        if (peek(lexer) == '|')
+        {
             advance(lexer);
             return make_token(TOKEN_PIPE_PIPE, NULL, line, col);
         }
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_PIPE_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_PIPE, NULL, line, col);
     case '^':
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_CARET_EQUAL, NULL, line, col);
         }
@@ -341,29 +403,35 @@ Token lexer_next_token(Lexer *lexer)
     case '~':
         return make_token(TOKEN_TILDE, NULL, line, col);
     case '<':
-        if (peek(lexer) == '<') {
+        if (peek(lexer) == '<')
+        {
             advance(lexer);
-            if (peek(lexer) == '=') {
+            if (peek(lexer) == '=')
+            {
                 advance(lexer);
                 return make_token(TOKEN_LESS_LESS_EQUAL, NULL, line, col);
             }
             return make_token(TOKEN_LESS_LESS, NULL, line, col);
         }
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_LESS_EQUAL, NULL, line, col);
         }
         return make_token(TOKEN_LESS, NULL, line, col);
     case '>':
-        if (peek(lexer) == '>') {
+        if (peek(lexer) == '>')
+        {
             advance(lexer);
-            if (peek(lexer) == '=') {
+            if (peek(lexer) == '=')
+            {
                 advance(lexer);
                 return make_token(TOKEN_GREATER_GREATER_EQUAL, NULL, line, col);
             }
             return make_token(TOKEN_GREATER_GREATER, NULL, line, col);
         }
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_GREATER_EQUAL, NULL, line, col);
         }
@@ -385,17 +453,26 @@ Token lexer_next_token(Lexer *lexer)
     case ':':
         return make_token(TOKEN_COLON, NULL, line, col);
     case '=':
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_EQUALS_EQUALS, NULL, line, col);
         }
         return make_token(TOKEN_ASSIGN, NULL, line, col);
     case '!':
-        if (peek(lexer) == '=') {
+        if (peek(lexer) == '=')
+        {
             advance(lexer);
             return make_token(TOKEN_BANG_EQUALS, NULL, line, col);
         }
         return make_token(TOKEN_BANG, NULL, line, col);
+    case '[':
+        return make_token(TOKEN_LBRACKET, NULL, line, col);
+    case ']':
+        return make_token(TOKEN_RBRACKET, NULL, line, col);
+    case '.':
+        return make_token(TOKEN_DOT, NULL, line, col);
+
     default:
         report_error(line, col, "unexpected character '%c'", c);
         return make_token(TOKEN_EOF, NULL, line, col);
@@ -404,7 +481,8 @@ Token lexer_next_token(Lexer *lexer)
 
 const char *token_type_to_string(TokenType type)
 {
-    switch (type) {
+    switch (type)
+    {
     case TOKEN_EOF:
         return "end of file";
     case TOKEN_INT_LIT:
@@ -523,6 +601,17 @@ const char *token_type_to_string(TokenType type)
         return "','";
     case TOKEN_SEMICOLON:
         return "';'";
+    case TOKEN_LBRACKET:
+        return "'['";
+    case TOKEN_RBRACKET:
+        return "']'";
+    case TOKEN_KEYWORD_STRUCT:
+        return "'struct'";
+    case TOKEN_DOT:
+        return "'.'";
+    case TOKEN_ARROW:
+        return "'->'";
     }
+
     return "unknown token";
 }
