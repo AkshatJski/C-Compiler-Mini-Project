@@ -12,18 +12,30 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ex
 ## What's inside
 
 - Hand-written lexer, recursive-descent parser, scoped symbol table,
-  semantic analysis, and code generator (~4,700 lines of C99).
-- **Types:** `int` (64-bit), `char` (signed, one byte), and `void` functions,
-  plus derived **pointers**, one-dimensional **arrays**, and **structs**.
+  semantic analysis, and code generator (~5,400 lines of C99 across `src/`
+  and `include/`).
+- **Types:** `int` (64-bit), `char` (signed, one byte), their `unsigned`
+  counterparts (`unsigned int`, `unsigned char`, and bare `unsigned`), plus
+  derived **pointers**, **arrays** (any number of dimensions), and **structs**.
 - **Pointers & arrays:** `int *p` / `int **pp`, address-of `&`, dereference `*`
   (read and write), pointer arithmetic scaled by the element size
-  (`p + n`, `p - n`, `p - q`, `++p`, `p++`, `p += n`), one-dimensional arrays
-  (`int a[10]`) with indexing `a[i]`, and array-to-pointer decay when arrays
-  are passed to functions. `0` acts as the null pointer.
+  (`p + n`, `p - n`, `p - q`, `++p`, `p++`, `p += n`), arrays (`int a[10]`,
+  `int m[3][4]`) with indexing `a[i]` / `m[i][j]`, and array-to-pointer decay
+  when arrays are passed to functions. `0` acts as the null pointer.
+  Array bounds are checked at **declaration** time (non-constant, zero, or
+  over-long dimension lists are rejected); indexing is **not** bounds-checked
+  at run time, exactly as in C.
 - **Structs:** `struct` definitions with `int`/`char`/pointer/struct members,
   member access with `.` and `->`, struct pointers and arrays of structs,
   self-referential types (`struct Node { struct Node *next; }`), and global
   structs/arrays (zero-initialized).
+- **`unsigned`:** `unsigned`, `unsigned int` (64-bit) and `unsigned char`
+  (one byte), plus `signed` as the explicit default. `unsigned` values use
+  `divq` instead of `idivq`, `shrq` instead of `sarq`, and the unsigned
+  `setb`/`setbe`/`seta`/`setae` comparisons; `unsigned char` is loaded with
+  `movzbq` (zero extension) rather than `movsbq`. Narrow `unsigned char`
+  arithmetic still promotes to a signed 64-bit value, which is exactly C's
+  integer-promotion rule, and pointers compare as unsigned addresses.
 - **Statements:** `if`/`else`, `while`, `do`/`while`, `for` (loop-local
   declarations), `switch`/`case`/`default` with fallthrough, `break`,
   `continue`, `return`, and nested blocks.
@@ -39,15 +51,20 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ex
   optional `u`/`l` suffixes; character constants (`'A'`, `'\n'`, `'\x41'`).
 - **Diagnostics:** friendly errors with `file:line:col`, including lvalue
   checks, unknown struct members, scope/`main`/`break`/`continue`/`switch`
-  validation, and rejection of non-constant global initializers.
+  validation, rejection of non-constant global initializers, assignment to an
+  array, dereferencing a `void *`, incomplete/zero-sized objects, and struct
+  redefinition.
 - `--dump-tokens` / `--dump-ast` reveal the compiler's internals.
 - Programs report results through their **exit code** (there is no `printf`).
-- **Tests:** 14 positive programs (`tests/01…14`) and 18 rejection tests
-  (`tests/errors/`), covering pointers (`12`), arrays (`13`), and structs (`14`).
+- **Tests:** 18 positive programs (`tests/01…18`) and 30 rejection tests
+  (`tests/errors/`), covering pointers (`12`), arrays (`13`), structs (`14`),
+  nested `switch` labels (`15`), member `++`/`--` (`16`), multi-dimensional
+  arrays (`17`), and `unsigned` types (`18`).
 
-Still out of scope (by design): `float`/`double`, `unsigned`, multi-dimensional
-arrays, arrays with initializer lists, `sizeof`, string literals, and the
-preprocessor.
+Still out of scope (by design): `float`/`double`, arrays with initializer
+lists, `sizeof`, string literals, and the preprocessor. `int` remains 64-bit
+(see the open Phase 1 decision in [ROADMAP.md](ROADMAP.md)), so `unsigned int`
+is 64-bit too.
 
 ## A tiny example
 
@@ -85,7 +102,7 @@ Compiling and running this returns **49** as the process exit code.
 ## Quick start (Windows / PowerShell)
 
 ```
-cd "C:\Folder D\C_Compiler_Test_MiniProject\my_c_compiler"
+cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
 .\test.bat         # runs the positive + error test suites
 .\showcase.bat     # end-to-end demo, returns 197

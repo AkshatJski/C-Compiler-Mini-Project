@@ -30,7 +30,7 @@ Lex, Yacc, or LLVM — everything is plain C.
 ### Project layout
 
 ```
-my_c_compiler/
+C-Compiler-Mini-Project/
 ├── Makefile            Build + test automation (Linux / WSL)
 ├── build.bat           Build script (Windows: compiles mycc.exe)
 ├── test.bat            Test script (Windows: positive + error suites)
@@ -78,6 +78,13 @@ my_c_compiler/
 │   ├── 09_types_globals.c char type, global initializers, void, implicit 0
 │   ├── 10_ternary.c      the conditional ?: operator
 │   ├── 11_scope.c        for-init scoping, shadowing, nested blocks
+│   ├── 12_pointers.c     & and *, pointer arithmetic, null checks
+│   ├── 13_arrays.c       arrays, indexing, array-to-pointer decay
+│   ├── 14_structs.c      structs, member access, ->, prototypes
+│   ├── 15_nested_switch.c case labels nested in blocks/if/nested switch
+│   ├── 16_member_incdec.c ++/-- on struct members (. and ->)
+│   ├── 17_multidim_arrays.c  int m[3][4] / int t[2][3][4], row stride
+│   ├── 18_unsigned.c     unsigned int / unsigned char semantics
 │   └── errors/           Programs that must be rejected, with EXPECT-ERROR
 ├── mycc                The compiled compiler binary (Linux build result)
 └── mycc.exe            The compiled compiler binary (Windows build result)
@@ -123,9 +130,37 @@ Everything below is supported by the compiler.
 - `int` — all values are 64-bit signed.
 - `char` — one byte, signed: stored with `movb` and loaded with sign
   extension, so `char c = 200;` then reads back as `-56`.
+- `unsigned`, `unsigned int` — same 64-bit storage as `int`, but the value is
+  read as unsigned: `/` and `%` emit `divq` (not `idivq`), `>>` emits `shrq`
+  (not `sarq`), and `< <= > >=` use `setb`/`setbe`/`seta`/`setae`.
+  Bare `unsigned` means `unsigned int`, as in C. `signed` is accepted as the
+  explicit spelling of the default.
+- `unsigned char` — one byte, loaded with **zero** extension (`movzbq`), so
+  `unsigned char c = 200;` reads back as `200`. Arithmetic on it still
+  operates on a signed 64-bit value — with `c = 200`, `c - 300` is `-100`,
+  not a wrapped-around huge number — which is exactly what C's
+  integer-promotion rule does.
 - `void` — only as a function return type (functions with side effects).
+- **Pointers:** `int *p`, `int **pp`, `struct Node *n`; `&x` takes an
+  address, `*p` reads/writes through one, and `p + n`, `p - n`, `p - q`,
+  `++p`, `p++`, `p += n` scale by the element size. `0` is the null pointer.
+  Pointer differences come back in *elements*, not bytes, and pointers
+  compare as unsigned addresses.
+- **Arrays:** `int a[10]`, `char buf[64]`, and any number of dimensions —
+  `int m[3][4]`, `int t[2][3][4]` — indexed with `a[i]` / `m[i][j]`.
+  An array used in an expression decays to a pointer to its first element,
+  including when passed to a function. The **declaration** is checked
+  (bounds must be positive integer constants; lists longer than 8
+  dimensions are rejected); indexing is *not* bounds-checked at run time,
+  as in C. Locals are **not** zero-filled, so initialize before reading.
+- **Structs:** `struct Point { int x; int y; };` with `int`/`char`/pointer/
+  struct members (including self-referential `struct Node *next`), access
+  via `.` and `->`, nested structs (`o.in.x`), arrays of structs, struct
+  pointers, and global structs (zero-initialized).
 - Integer literals in decimal (`42`), hexadecimal (`0x2A`), and octal
-  (`052`), with optional `u`/`l` suffixes (e.g. `42u`, `0xFFL`).
+  (`052`), with optional `u`/`l` suffixes (e.g. `42u`, `0xFFL`). The
+  suffixes are accepted but do **not** change the type — declare the
+  variable `unsigned` to get unsigned semantics.
 - Character constants with escapes: `'A'`, `'\n'`, `'\t'`, `'\0'`,
   `'\\'`, `'\''`, and hex escapes like `'\x41'`.
 
@@ -154,7 +189,10 @@ Everything below is supported by the compiler.
   means `0 && (1 / 0)` is safe (no division by zero).
 - `?:` is right-associative: `a ? b : c ? d : e` means `a ? b : (c ? d : e)`.
 - `%` follows C semantics: the result has the sign of the dividend
-  (truncated toward zero); `>>` is arithmetic (sign-filling) on `int`.
+  (truncated toward zero) for signed operands; `>>` is arithmetic
+  (sign-filling) on signed values and logical (zero-filling) on `unsigned`
+  and on pointers. Both are chosen by `binary_is_unsigned()`, so the same
+  source picks `idivq`/`sarq` or `divq`/`shrq` from the operand types.
 - `!x`, `-x`, `~x`, `x += y`, and `++x` are implemented by *desugaring*: the
   parser rewrites them into simpler forms the code generator already knows
   (see section 3).
@@ -176,7 +214,8 @@ Everything below is supported by the compiler.
 
 ### Functions
 - Global functions returning `int` or `void`, with `void` or empty parameter
-  lists. (`char` return types are not supported — use `int`.)
+  lists. (`char` and `unsigned char` return types are not supported — use
+  `int` or `unsigned int`.)
 - Up to **6 parameters** (the x86-64 register-argument limit we support).
 - **Recursion** (functions call themselves safely).
 - **Forward references**: a function may call another function that is
@@ -224,11 +263,18 @@ prog.c: compilation aborted during semantic analysis
   arbitrarily deep expressions.
 
 - **Comparison operators** compile to `cmpq` + `setcc` + `movzbq`, which
-  produces a normal `0`/`1` value.
+  produces a normal `0`/`1` value. Signed operands use
+  `setl`/`setle`/`setg`/`setge`; `unsigned` operands and pointers use the
+  unsigned `setb`/`setbe`/`seta`/`setae`, so pointer ordering and large
+  `unsigned` values compare correctly.
 
 - **Division and modulo** use the signed divide instruction: `cqto` sign
   extends the dividend into `%rdx:%rax`, `idivq %r10` computes quotient in
   `%rax` and remainder in `%rdx`. `%` simply moves `%rdx` into `%rax`.
+  Unsigned operands instead **clear** `%rdx` (`xorq %rdx, %rdx`) and use
+  `divq` — `cqto` would be wrong there, because `divq` treats `%rdx:%rax`
+  as an *unsigned* 128-bit dividend. Both shapes are emitted from one case
+  in `gen_binary`, keyed off `binary_is_unsigned(left, right)`.
   (`%r10` is a caller-saved scratch register, so this does not clobber a
   callee-saved register without preserving it.)
 
@@ -260,9 +306,45 @@ prog.c: compilation aborted during semantic analysis
   at compile time by a small constant folder, which emits `.quad` for `int`
   and `.byte` for `char`; anything non-constant is reported as an error.
 
-- **`char`** is one byte. Stores emit `movb` (truncating to the low byte) and
-  loads emit `movsbq` (sign-extending), so a stored `200` reads back as `-56`
-  — matching a signed `char` on both Linux and Windows.
+- **`char`** is one byte. Stores emit `movb` (truncating to the low byte).
+  Loads emit `movsbq` (sign-extending) for `char` and `movzbq`
+  (zero-extending) for `unsigned char`, so a stored `200` reads back as
+  `-56` or `200` respectively — matching signed/unsigned one-byte types on
+  both Linux and Windows. Struct members, `*p`, `a[i]`, and global loads all
+  route through one `load_op_for()` helper so the choice is made in exactly
+  one place.
+
+- **Pointers, arrays, and structs share one address model.** `a[i]` is
+  desugared by the *parser* into `*(a + i)` (before any type information
+  exists), then semantic analysis turns `array + int` into `base + i *
+  sizeof(elem)` by inserting the scale factor into the tree, so the code
+  generator only ever adds and dereferences. `&x` is `gen_addr` on the
+  operand, `*p`'s address *is* its value, and `p.x` is `base + offset`
+  where the offset comes from the struct member list (members are aligned
+  and padded as they are added, so `char` then `int` get a hole between
+  them). An array-typed *dereference* is the one exception to the "load"
+  rule: on `int m[3][4]`, `m[i]` must yield the row's **address**, not the
+  value stored in its first slot, so `gen_expr(AST_DEREF)` skips the load
+  whenever the result type is an array.
+
+- **Multi-dimensional arrays** fall out of that same model once the parser
+  applies dimensions *inside out*. `int m[3][4]` is read left to right but
+  built as `array[4] of int` first, then `array[3] of (array[4] of int)` —
+  giving a 32-byte row stride. `m` decays to a pointer whose element type
+  is `int[4]`, so `m + i` scales by 32, the inner dereference yields
+  `int[4]`, and `+ j` then scales by 8. Applying dimensions in source order
+  instead would silently produce a 16-byte stride and corrupt every
+  `m[i][j]`.
+
+- **`unsigned` is a flag on the type, not a new kind.** `Type.is_unsigned`
+  lets `unsigned int` keep `TYPE_INT` and `unsigned char` keep `TYPE_CHAR`,
+  so every existing check keeps working and only two things change: loads
+  pick `movsbq` vs `movzbq`, and `gen_binary` picks the signed/unsigned
+  instruction for `/`, `%`, `>>`, and the ordered comparisons. The decision
+  is deliberately *not* "any unsigned operand": a narrow `unsigned char`
+  does not make an operation unsigned (it is zero-extended into the 64-bit
+  domain, which is exactly C's integer promotion), while `unsigned int`,
+  which can hold values above 2^63, does — as do pointers.
 
 - **`switch` / `break` / `continue`.** Codegen keeps two stacks of
   target labels: one for `break` (pushed by loops *and* `switch`) and one for
@@ -270,7 +352,12 @@ prog.c: compilation aborted during semantic analysis
   stack and `continue` to the top of the continue stack, so a `break` inside
   a `switch` nested in a loop leaves only the switch, while `continue` inside
   a switch continues the enclosing loop. A `switch` compiles to a chain of
-  `cmpq`/`je` against each `case` value plus a jump to `default`.
+  `cmpq`/`je` against each `case` value plus a jump to `default`. A `case` or
+  `default` label may sit anywhere inside the switch body — nested in a block,
+  an `if`, or a loop — so the labels are collected recursively (a third stack
+  tracks the innermost enclosing switch, and each label is emitted at its
+  source position, including inside nested compound statements). A nested
+  `switch` owns its own labels and numbering.
 
 ---
 
@@ -282,12 +369,12 @@ The compiler itself is portable, and its assembly output works with gcc on
 | Option | Where you run it | What you need |
 |--------|------------------|---------------|
 | **A. Windows (native)** | PowerShell / CMD on Windows | MinGW-w64 gcc (free, see below) |
-| **B. Linux via WSL** | A `wsl` shell inside Windows | the private toolchain already set up at `/tmp/opencode/root` |
+| **B. Linux via WSL** | A `wsl` shell inside Windows | gcc + make: `sudo apt install build-essential` |
 
-This project was developed in WSL, so on this particular machine the WSL
-toolchain is already prepared. But if your main device is Windows, **use
-Option A** — the compiler builds to a real `mycc.exe` and the whole
-workflow runs in PowerShell with no WSL involved.
+If your main device is Windows, **use Option A** — the compiler builds to a
+real `mycc.exe` and the whole workflow runs in PowerShell with no WSL
+involved. Option B suits you if you are more at home in a Linux shell; it
+needs a one-time package install (below).
 
 ### Option A requirement: MinGW-w64
 
@@ -318,17 +405,27 @@ You should see a version line (e.g. `gcc (MinGW-W64 ...)`). If it says
 at the default location; otherwise fix the PATH or set `CC` to the full
 path of your gcc before running the scripts:
 
-### Option B requirement: the WSL toolchain
+### Option B requirement: gcc and make
 
-On this machine, the Linux toolchain is unpacked in a private folder
-because there is no system gcc:
+WSL runs Ubuntu, which does **not** ship with a compiler. Install the
+standard toolchain once, from any WSL shell:
 
-- Tools live in: `/tmp/opencode/root/usr/bin`
-- Libraries live in: `/tmp/opencode/root/usr/lib/x86_64-linux-gnu`
-- A helper wrapper exists at: `/tmp/opencode/gccwrap`
+```
+sudo apt update
+sudo apt install build-essential
+```
 
-Because of that, every new WSL terminal must run two `export` lines before
-building (see section 6B).
+`build-essential` pulls in gcc, make and the libc development headers —
+everything this project needs. Check it worked:
+
+```
+gcc --version
+make --version
+```
+
+Both must print a version line. No `export` lines, helper wrappers, or
+`CC=` overrides are required: plain `gcc` and plain `make` do the job
+(section 6).
 
 ---
 
@@ -336,7 +433,7 @@ building (see section 6B).
 
 Open **PowerShell** in the project folder:
 ```
-cd "C:\Folder D\C_Compiler_Test_MiniProject\my_c_compiler"
+cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 ```
 
 (You can also open the folder in File Explorer and type `powershell` in the
@@ -378,7 +475,7 @@ with the diagnostic named by `EXPECT-ERROR:`. **Expected output (abridged):**
 PASS: tests\01_arithmetic.c (exit 0)
 PASS: tests\02_conditionals.c (exit 0)
 ...
-PASS: tests\11_scope.c (exit 0)
+PASS: tests\18_unsigned.c (exit 0)
 PASS: tests\errors\break_outside.c (rejected)
 ...
 PASS: tests\errors\void_variable.c (rejected)
@@ -458,7 +555,7 @@ echo %errorlevel%
 
 ## 6. Option B — Build, test, and showcase on Linux (WSL)
 
-### 6.1 Enter WSL and set up the toolchain
+### 6.1 Enter WSL and verify the toolchain
 
 Run these in **PowerShell** first, then in the Linux shell:
 
@@ -470,13 +567,16 @@ Your prompt should now end in `$` (not `PS`). The Windows folder
 `C:\Folder D\...` is visible inside WSL at `/mnt/c/Folder D/...`. Now run:
 
 ```
-cd "/mnt/c/Folder D/C_Compiler_Test_MiniProject/my_c_compiler"
-export PATH=/tmp/opencode/root/usr/bin:$PATH
-export LD_LIBRARY_PATH=/tmp/opencode/root/usr/lib/x86_64-linux-gnu
+cd "/mnt/c/Folder D/Feature_anant/C-Compiler-Mini-Project"
 ```
 
-The two `export` lines tell the shell where the private gcc/make live; they
-must be re-run in every new terminal.
+Confirm gcc and make are available (install them first if not — see
+"Option B requirement" in section 4):
+
+```
+gcc --version
+make --version
+```
 
 Sanity check:
 ```
@@ -488,18 +588,18 @@ Expected: `Makefile  build.bat  build  demos  example.c  include  instructions.m
 
 ```
 make clean
-make CC=/tmp/opencode/gccwrap
+make
 ```
 
 - `make clean` removes old build artifacts.
-- `make CC=/tmp/opencode/gccwrap` compiles `src/*.c` into the `mycc` binary.
+- `make` compiles `src/*.c` into the `mycc` binary.
 
 Expected: compile lines and no error messages.
 
 ### 6.3 Run the automated test suite
 
 ```
-make CC=/tmp/opencode/gccwrap test
+make test
 ```
 
 Expected output (abridged):
@@ -508,7 +608,7 @@ Expected output (abridged):
 PASS: tests/01_arithmetic.c (exit 0)
 PASS: tests/02_conditionals.c (exit 0)
 ...
-PASS: tests/11_scope.c (exit 0)
+PASS: tests/18_unsigned.c (exit 0)
 PASS: tests/errors/break_outside.c (rejected)
 ...
 PASS: tests/errors/void_variable.c (rejected)
@@ -528,9 +628,9 @@ The second command prints the generated x86-64 assembly: `pushq`, `movq`,
 ### 6.5 Run the end-to-end showcase
 
 ```
-./mycc example.c -o /tmp/opencode/demo.s
-/tmp/opencode/gccwrap -no-pie -o /tmp/opencode/demo /tmp/opencode/demo.s
-/tmp/opencode/demo
+./mycc example.c -o /tmp/demo.s
+gcc -no-pie -o /tmp/demo /tmp/demo.s
+/tmp/demo
 echo $?
 ```
 
@@ -542,7 +642,7 @@ Create a test file by typing the `cat` command, the program, then **Ctrl+D**
 to finish:
 
 ```
-cat > /tmp/opencode/test.c
+cat > /tmp/test.c
 int triple(int x) {
     return x * 3;
 }
@@ -557,9 +657,9 @@ int main(void) {
 Then run the full pipeline on it:
 
 ```
-./mycc /tmp/opencode/test.c -o /tmp/opencode/test.s
-/tmp/opencode/gccwrap -no-pie -o /tmp/opencode/test /tmp/opencode/test.s
-/tmp/opencode/test
+./mycc /tmp/test.c -o /tmp/test.s
+gcc -no-pie -o /tmp/test /tmp/test.s
+/tmp/test
 echo $?
 ```
 
@@ -572,15 +672,15 @@ echo $?
 ### 6.7 See the error reporting (WSL, optional)
 
 ```
-printf 'int main(void){ return missing_var; }\n' > /tmp/opencode/err.c
-./mycc /tmp/opencode/err.c
+printf 'int main(void){ return missing_var; }\n' > /tmp/err.c
+./mycc /tmp/err.c
 ```
 
 Expected:
 
 ```
-/tmp/opencode/err.c:1:22: error: undeclared variable 'missing_var'
-/tmp/opencode/err.c: compilation aborted during semantic analysis
+/tmp/err.c:1:22: error: undeclared variable 'missing_var'
+/tmp/err.c: compilation aborted during semantic analysis
 ```
 
 `1:22` means line 1, column 22 — exactly where the mistake is.
@@ -628,10 +728,68 @@ int main(void) {
 }
 ```
 
+The memory and `unsigned` side of the language:
+
+```c
+struct Point { int x; int y; };
+
+int sum_row(int *row, int n);            /* prototype */
+
+int matrix[2][3];                        /* global 2-D array, zero-filled */
+
+int main(void) {
+    int m[3][4];                         /* local 2-D array */
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 4; j++)
+            m[i][j] = i * 10 + j;
+
+    int *row = m[1];                     /* a row decays to int* */
+    if (row[2] != 12) return 1;
+    if (m[2] - m[1] != 4) return 2;      /* row stride = 4 ints */
+
+    struct Point p;                      /* struct, dot access */
+    p.x = 5;
+    struct Point *pp = &p;               /* pointer to struct */
+    pp->y = 7;                           /* arrow access */
+    if (p.x + p.y != 12) return 3;
+
+    int *q = &m[0][0];                   /* address-of a nested element */
+    *q = 100;                            /* write through the pointer */
+    if (m[0][0] != 100) return 4;
+
+    unsigned big = 1;
+    big = big << 63;                     /* 0x8000000000000000 */
+    if (big / 2 != 4611686018427387904) return 5;   /* unsigned, not negative */
+    if ((big >> 63) != 1) return 6;      /* logical shift, not arithmetic */
+
+    unsigned char c = 200;               /* zero-extended byte */
+    if (c != 200) return 7;
+    char s = 200;                        /* sign-extended byte */
+    if (s != -56) return 8;
+
+    if (sum_row(m[2], 4) != 86) return 9;/* 20+21+22+23 */
+    return 0;
+}
+
+int sum_row(int *row, int n) {
+    int s = 0;
+    for (int i = 0; i < n; i++) s += row[i];
+    return s;
+}
+```
+
 ### Not supported (by design)
-- No `float`/`double`, `long`/`short`, `unsigned`, structs, pointers,
-  arrays, or `enum`/`typedef`.
-- Function return type must be `int` (or `void`); `char` returns are rejected.
+- No `float`/`double`, `long`/`short`, `enum`/`typedef`, or bitfields.
+  (`unsigned` *is* supported — see §2 Data. `int` stays 64-bit, so
+  `unsigned int` is 64-bit too.)
+- No aggregate initializers: `int a[2] = {1,2}` and
+  `struct Point p = {1,2}` are rejected — assign element by element.
+  Uninitialized **local** objects are therefore indeterminate, not zero.
+- No run-time bounds checking on `a[i]` (indexing trusts the programmer, as
+  in C), and no `sizeof`.
+- Function return type must be `int` or `unsigned int` (or `void`); `char`
+  returns are rejected. Function *parameters* are declared as pointers —
+  `int f(int a[10])` is a syntax error; write `int f(int *a)` instead.
 - No `#include`, no preprocessor, no string literals, no printing.
   Programs communicate results through their **exit code** (`return`).
 - `switch` supports integer/enum-style cases only — no `range` cases, and
@@ -662,7 +820,7 @@ int main(void) {
 **Windows (PowerShell)** — fastest path:
 
 ```
-cd "C:\Folder D\C_Compiler_Test_MiniProject\my_c_compiler"
+cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat
 .\test.bat        # all tests should pass
 .\showcase.bat    # should print "The program returned: 197"
@@ -671,15 +829,13 @@ cd "C:\Folder D\C_Compiler_Test_MiniProject\my_c_compiler"
 **Linux (WSL)**:
 
 ```
-cd "/mnt/c/Folder D/C_Compiler_Test_MiniProject/my_c_compiler"
-export PATH=/tmp/opencode/root/usr/bin:$PATH
-export LD_LIBRARY_PATH=/tmp/opencode/root/usr/lib/x86_64-linux-gnu
+cd "/mnt/c/Folder D/Feature_anant/C-Compiler-Mini-Project"
 make clean
-make CC=/tmp/opencode/gccwrap
-make CC=/tmp/opencode/gccwrap test      # all tests should pass
-./mycc example.c -o /tmp/opencode/demo.s
-/tmp/opencode/gccwrap -no-pie -o /tmp/opencode/demo /tmp/opencode/demo.s
-/tmp/opencode/demo
+make
+make test                              # all tests should pass
+./mycc example.c -o /tmp/demo.s
+gcc -no-pie -o /tmp/demo /tmp/demo.s
+/tmp/demo
 echo $?                                 # should print 197
 ```
 

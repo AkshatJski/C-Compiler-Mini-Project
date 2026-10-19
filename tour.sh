@@ -4,18 +4,16 @@
 #
 #  Run this inside WSL (type "wsl" in PowerShell first):
 #      bash tour.sh
-#  Requires: mycc (run: make CC=/tmp/opencode/gccwrap)
+#  Requires: mycc (run: make)
 #  Press Enter to move from one step to the next.
 # ============================================================
 
 set -u
 
-export PATH=/tmp/opencode/root/usr/bin:$PATH
-export LD_LIBRARY_PATH=/tmp/opencode/root/usr/lib/x86_64-linux-gnu
-CC=/tmp/opencode/gccwrap
+export CC=${CC:-gcc}
 
 if [ ! -x ./mycc ]; then
-    echo "mycc not found. Run: make CC=/tmp/opencode/gccwrap"
+    echo "mycc not found. Run: make"
     exit 1
 fi
 mkdir -p build
@@ -138,7 +136,7 @@ step
 echo "[7/7] PROOF IT IS ROBUST - THE TEST SUITE"
 echo "--------------------------------------------------------------"
 echo
-make CC=/tmp/opencode/gccwrap test
+make test
 echo
 echo "  Five independent programs, each compiled by mycc, run, and"
 echo "  verified against a hand-computed answer."

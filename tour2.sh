@@ -7,17 +7,15 @@
 #            parser, semantic analysis, code generation).
 #
 #  Run inside WSL:   bash tour2.sh
-#  Requires: mycc (run: make CC=/tmp/opencode/gccwrap)
+#  Requires: mycc (run: make)
 # ============================================================
 
 set -u
 
-export PATH=/tmp/opencode/root/usr/bin:$PATH
-export LD_LIBRARY_PATH=/tmp/opencode/root/usr/lib/x86_64-linux-gnu
-CC=/tmp/opencode/gccwrap
+export CC=${CC:-gcc}
 
 if [ ! -x ./mycc ]; then
-    echo "mycc not found. Run: make CC=/tmp/opencode/gccwrap"
+    echo "mycc not found. Run: make"
     exit 1
 fi
 mkdir -p build
@@ -158,7 +156,7 @@ echo
 echo "  That one number travelled through all four stages - and a"
 echo "  full test suite proves it is reliable:"
 echo
-make CC=/tmp/opencode/gccwrap test
+make test
 echo
 echo "  UNDER THE HOOD - the four stages, and how big each one is:"
 echo

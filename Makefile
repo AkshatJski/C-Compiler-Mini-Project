@@ -6,7 +6,7 @@ SRCS      = src/main.c src/lexer.c src/parser.c src/symtab.c \
 OBJDIR    = build
 OBJS      = $(SRCS:src/%.c=$(OBJDIR)/%.o)
 TARGET    = mycc
-TESTDIR  ?= /tmp/opencode
+TESTDIR  ?= /tmp/mycc-test
 
 .PHONY: all clean test
 
