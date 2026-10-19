@@ -6,8 +6,8 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 - **[ ]** not started · **[~]** in progress · **[x]** done
 
 > **Status:** Phases 0, 1 (except the `int` width decision and multi-error
-> recovery), and Phase 2 are complete. The suite now has 11 positive tests and
-> 18 error/diagnostic tests.
+> recovery), Phase 2, and Phase 3 are complete. The suite now has 18 positive
+> tests and 30 error/diagnostic tests.
 
 ---
 
@@ -43,7 +43,8 @@ Make the language match real C semantics more closely without adding syntax.
       sign extension after every 64-bit op) or add a distinct `long` type and
       document the choice
 - [x] Remove dead code: `scope_depth()`, `Symbol.is_param`,
-      `SYMBOL_TYPE_VOID`, `Scope.child`, `xrealloc`
+      `SYMBOL_TYPE_VOID`, `Scope.child` (`xrealloc` was removed with them and
+      later brought back as a genuinely-used allocator in this branch)
 - [ ] Parse errors recover so more than one error is reported per run
 
 **Acceptance:** existing 5 tests pass; new tests cover `for`-scope shadowing,
@@ -72,17 +73,25 @@ diagnostics; all green.
 
 ## Phase 3 — Memory & types (the big teaching milestone)
 
-- [ ] Pointers: `&`, `*`, pointer arithmetic, `NULL`, null checks
+- [x] Pointers: `&`, `*`, pointer arithmetic, `NULL`, null checks
       (this unlocks everything else and is worth doing thoroughly)
-- [ ] One-dimensional arrays (size-checked? address-to-first-element decay
-      in expressions), then multi-dimensional
-- [ ] `struct` definitions, member access `.`
-- [ ] Function prototypes / forward declarations (formal `param decls`)
-- [ ] `unsigned` variants if `int` becomes 32-bit (Phase 1)
+- [x] Arrays: declaration-time size checks (positive, constant bounds),
+      address-to-first-element decay in expressions, and multi-dimensional
+      (`int m[3][4]`, `int t[2][3][4]`) built by nesting dimensions inside
+      out so the row stride is right
+- [x] `struct` definitions, member access `.`, plus `->`, nested structs,
+      arrays of structs, and self-referential members
+- [x] Function prototypes / forward declarations (formal `param decls`)
+- [x] `unsigned` variants: `unsigned`, `unsigned int`, `unsigned char` (and
+      `signed` as the explicit default) — signedness now selects
+      `divq`/`shrq`/unsigned `setcc` and a zero-extending `movzbq` byte load.
+      Implemented independently of the `int`-width decision in Phase 1: here
+      `unsigned int` is 64-bit, matching the existing 64-bit `int`.
 
 **Acceptance:** `tests/12_pointers.c`, `tests/13_arrays.c`,
-`tests/14_structs.c`; a real `main` that reads/writes an array and sums it
-via pointers. This phase proves the compiler can host real algorithms.
+`tests/14_structs.c`, `tests/17_multidim_arrays.c`, and `tests/18_unsigned.c`;
+a real `main` that reads/writes an array and sums it via pointers. This phase
+proves the compiler can host real algorithms.
 
 ---
 

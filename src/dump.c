@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-
 #include "dump.h"
 #include "tokens.h"
 
@@ -11,17 +10,20 @@
 void dump_tokens(Lexer *lexer, FILE *out)
 {
     int index = 0;
-    for (;;) {
+    for (;;)
+    {
         Token tok = lexer_next_token(lexer);
         fprintf(out, "%3d  %3d:%-3d  %-22s", index, tok.line, tok.col,
                 token_type_to_string(tok.type));
-        if (tok.value != NULL) {
+        if (tok.value != NULL)
+        {
             fprintf(out, "  '%s'", tok.value);
         }
         fprintf(out, "\n");
         int done = tok.type == TOKEN_EOF;
         free(tok.value);
-        if (done) {
+        if (done)
+        {
             break;
         }
         index++;
@@ -34,7 +36,8 @@ void dump_tokens(Lexer *lexer, FILE *out)
 
 static const char *op_name(int op)
 {
-    switch (op) {
+    switch (op)
+    {
     case OP_ADD:
         return "+";
     case OP_SUB:
@@ -80,20 +83,28 @@ static void dump_node(const ASTNode *node, int depth, FILE *out);
 
 static const char *type_name(int vtype)
 {
-    switch (vtype) {
+    switch (vtype)
+    {
     case TYPE_INT:
         return "int";
     case TYPE_CHAR:
         return "char";
     case TYPE_VOID:
         return "void";
+    case TYPE_PTR:
+        return "ptr";
+    case TYPE_ARRAY:
+        return "array";
+    case TYPE_STRUCT:
+        return "struct";
     }
     return "?";
 }
 
 static void dump_chain(const ASTNode *node, int depth, FILE *out)
 {
-    for (; node != NULL; node = node->next) {
+    for (; node != NULL; node = node->next)
+    {
         dump_node(node, depth, out);
     }
 }
@@ -101,10 +112,12 @@ static void dump_chain(const ASTNode *node, int depth, FILE *out)
 static void dump_label(const char *label, const ASTNode *child, int depth,
                        FILE *out)
 {
-    if (child == NULL) {
+    if (child == NULL)
+    {
         return;
     }
-    for (int i = 0; i < depth; i++) {
+    for (int i = 0; i < depth; i++)
+    {
         fprintf(out, "  ");
     }
     fprintf(out, "[%s]\n", label);
@@ -113,11 +126,12 @@ static void dump_label(const char *label, const ASTNode *child, int depth,
 
 static void dump_node(const ASTNode *node, int depth, FILE *out)
 {
-    for (int i = 0; i < depth; i++) {
+    for (int i = 0; i < depth; i++)
+    {
         fprintf(out, "  ");
     }
-
-    switch (node->type) {
+    switch (node->type)
+    {
     case AST_PROGRAM:
         fprintf(out, "PROGRAM");
         break;
@@ -130,10 +144,13 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
                 type_name(node->vtype), node->stack_offset);
         break;
     case AST_VAR_DECL:
-        if (node->is_global) {
+        if (node->is_global)
+        {
             fprintf(out, "GLOBAL %s : %s  (.data, init %lld)", node->name,
                     type_name(node->vtype), node->value);
-        } else {
+        }
+        else
+        {
             fprintf(out, "LOCAL %s : %s  @ %d(%%rbp)", node->name,
                     type_name(node->vtype), node->stack_offset);
         }
@@ -192,16 +209,26 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_CALL:
         fprintf(out, "CALL %s", node->name);
         break;
+    case AST_ADDR_OF:
+        fprintf(out, "ADDR_OF &");
+        break;
+    case AST_DEREF:
+        fprintf(out, "DEREF *");
+        break;
+    case AST_MEMBER_ACCESS:
+        fprintf(out, "MEMBER .%s", node->name);
+        break;
     }
     fprintf(out, "  [%d:%d]\n", node->line, node->col);
 
     int d = depth + 1;
-    switch (node->type) {
+    switch (node->type)
+    {
     case AST_PROGRAM:
         dump_chain(node->body, d, out);
         break;
     case AST_FUNC_DECL:
-        dump_chain(node->left, d, out); /* parameters */
+        dump_chain(node->left, d, out);
         dump_label("body", node->body, d, out);
         break;
     case AST_PARAM:
@@ -255,6 +282,9 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         dump_label("else", node->right, d, out);
         break;
     case AST_POSTFIX:
+    case AST_ADDR_OF:
+    case AST_DEREF:
+    case AST_MEMBER_ACCESS:
         dump_node(node->left, d, out);
         break;
     case AST_CALL:
@@ -268,7 +298,8 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
 
 void dump_ast(const ASTNode *root, FILE *out)
 {
-    if (root != NULL) {
+    if (root != NULL)
+    {
         dump_node(root, 0, out);
     }
 }

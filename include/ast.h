@@ -25,7 +25,11 @@ typedef enum {
     AST_POSTFIX,
     AST_VAR_REF,
     AST_INT_LIT,
-    AST_CALL
+    AST_CALL,
+    /* Phase 3 additions */
+    AST_ADDR_OF,
+    AST_DEREF,
+    AST_MEMBER_ACCESS
 } ASTNodeType;
 
 typedef enum {
@@ -49,37 +53,57 @@ typedef enum {
     OP_GE
 } BinaryOp;
 
-/* Value type of a variable, parameter, or function return value. */
 typedef enum {
     TYPE_INT,
     TYPE_CHAR,
-    TYPE_VOID
+    TYPE_VOID,
+    TYPE_PTR,
+    TYPE_ARRAY,
+    TYPE_STRUCT
 } TypeKind;
+
+struct Type;
+
+typedef struct StructMember {
+    char *name;
+    struct Type *type;
+    int offset;
+    struct StructMember *next;
+} StructMember;
+
+typedef struct Type {
+    TypeKind kind;
+    struct Type *base;
+    int array_size;
+    char *struct_tag;
+    StructMember *members;
+    int size;
+    int align;
+    /* 1 for `unsigned int` / `unsigned char`. Appended last so the
+     * positional initializers of the shared scalar types in util.c keep
+     * their meaning (a missing field is zero, i.e. signed). */
+    int is_unsigned;
+} Type;
 
 typedef struct ASTNode {
     ASTNodeType type;
     BinaryOp op;
-    TypeKind vtype;     /* int/char; also a function's return type */
-    char *name;         /* identifier: variable / function / parameter */
-    long long value;    /* integer literal / case label constant */
+    TypeKind vtype;
+    Type *val_type;
+    char *name;
+    long long value;
     int line;
     int col;
-
-    int stack_offset;   /* filled by semantic analysis (-off(%rbp)) */
-    int is_global;      /* filled by semantic analysis */
-    int frame_size;     /* local frame size for functions, filled by semantic */
-    int case_index;     /* filled by codegen: index of a case label */
-
-    struct ASTNode *left;  /* binop lhs / assign target / return expr / params /
-                               for-init / postfix operand / ternary then /
-                               global initializer */
-    struct ASTNode *right; /* binop rhs / assign value / if-else branch /
-                               for-step / ternary else */
-    struct ASTNode *cond;  /* if / while / do-while / for / switch condition */
-    struct ASTNode *body;  /* block statement list / if-then / loop body /
-                               switch body */
-    struct ASTNode *args;  /* call arguments (chained via next) */
-    struct ASTNode *next;  /* sibling chain: statements, params, args */
+    int stack_offset;
+    int is_global;
+    int frame_size;
+    int case_index;
+    struct ASTNode *left;
+    struct ASTNode *right;
+    struct ASTNode *cond;
+    struct ASTNode *body;
+    struct ASTNode *args;
+    struct ASTNode *next;
 } ASTNode;
 
 #endif /* AST_H */

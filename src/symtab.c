@@ -1,17 +1,26 @@
 #include <stdlib.h>
 #include <string.h>
-
 #include "symtab.h"
 #include "util.h"
 
 static Scope global_scope;
 static Scope *current_scope;
 
+typedef struct StructEntry
+{
+    char *tag;
+    Type *type;
+    struct StructEntry *next;
+} StructEntry;
+
+static StructEntry *g_struct_list = NULL;
+
 void symtab_init(void)
 {
     global_scope.symbols = NULL;
     global_scope.parent = NULL;
     current_scope = &global_scope;
+    g_struct_list = NULL;
 }
 
 void scope_push(void)
@@ -23,13 +32,15 @@ void scope_push(void)
 
 void scope_pop(void)
 {
-    if (current_scope->parent == NULL) {
-        return; /* never pop the global scope */
+    if (current_scope->parent == NULL)
+    {
+        return;
     }
     Scope *victim = current_scope;
     current_scope = victim->parent;
     Symbol *sym = victim->symbols;
-    while (sym != NULL) {
+    while (sym != NULL)
+    {
         Symbol *next = sym->next;
         free(sym->name);
         free(sym);
@@ -38,7 +49,7 @@ void scope_pop(void)
     free(victim);
 }
 
-Symbol *symbol_insert(const char *name, TypeKind type, int is_global)
+Symbol *symbol_insert(const char *name, Type *type, int is_global)
 {
     Symbol *sym = xcalloc(1, sizeof(Symbol));
     sym->name = xstrdup(name);
@@ -54,9 +65,12 @@ Symbol *symbol_insert(const char *name, TypeKind type, int is_global)
 
 Symbol *symbol_lookup(const char *name)
 {
-    for (Scope *s = current_scope; s != NULL; s = s->parent) {
-        for (Symbol *sym = s->symbols; sym != NULL; sym = sym->next) {
-            if (strcmp(sym->name, name) == 0) {
+    for (Scope *s = current_scope; s != NULL; s = s->parent)
+    {
+        for (Symbol *sym = s->symbols; sym != NULL; sym = sym->next)
+        {
+            if (strcmp(sym->name, name) == 0)
+            {
                 return sym;
             }
         }
@@ -66,9 +80,31 @@ Symbol *symbol_lookup(const char *name)
 
 Symbol *symbol_lookup_current(const char *name)
 {
-    for (Symbol *sym = current_scope->symbols; sym != NULL; sym = sym->next) {
-        if (strcmp(sym->name, name) == 0) {
+    for (Symbol *sym = current_scope->symbols; sym != NULL; sym = sym->next)
+    {
+        if (strcmp(sym->name, name) == 0)
+        {
             return sym;
+        }
+    }
+    return NULL;
+}
+void struct_register(const char *tag, Type *type)
+{
+    StructEntry *entry = xcalloc(1, sizeof(StructEntry));
+    entry->tag = xstrdup(tag);
+    entry->type = type;
+    entry->next = g_struct_list;
+    g_struct_list = entry;
+}
+
+Type *struct_lookup(const char *tag)
+{
+    for (StructEntry *e = g_struct_list; e != NULL; e = e->next)
+    {
+        if (strcmp(e->tag, tag) == 0)
+        {
+            return e->type;
         }
     }
     return NULL;
