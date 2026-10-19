@@ -79,6 +79,10 @@ typedef struct Type {
     StructMember *members;
     int size;
     int align;
+    /* 1 for `unsigned int` / `unsigned char`. Appended last so the
+     * positional initializers of the shared scalar types in util.c keep
+     * their meaning (a missing field is zero, i.e. signed). */
+    int is_unsigned;
 } Type;
 
 typedef struct ASTNode {

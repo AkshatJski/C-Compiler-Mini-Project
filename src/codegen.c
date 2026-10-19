@@ -1,5 +1,6 @@
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "codegen.h"
@@ -32,6 +33,13 @@ static CtxKind continue_kind[MAX_NEST];
 static int continue_id[MAX_NEST];
 static int break_sp;
 static int continue_sp;
+
+/* Ids of the switch statements currently being generated, innermost last.
+ * Kept separate from the break stack because the innermost *breakable*
+ * context may be a loop nested inside the switch, while a case label always
+ * belongs to the innermost enclosing switch. */
+static int switch_id[MAX_NEST];
+static int switch_sp;
 
 static const char *break_label_fmt(CtxKind kind)
 {
@@ -83,11 +91,26 @@ static void emit_line(const char *fmt, ...)
 /* Expressions                                                        */
 /* ------------------------------------------------------------------ */
 
+/* Mnemonic that loads a value of `t` into %rax: 1-byte objects are loaded
+ * into the full 64-bit register, sign-extended for `char` and zero-extended
+ * for `unsigned char` (which is what makes `unsigned char` arithmetic match
+ * C's integer promotion). Everything else is a plain 64-bit load. */
+static const char *load_op_for(const Type *t, int is_char)
+{
+    if (!is_char)
+    {
+        return "movq";
+    }
+    /* t is NULL when only the coarse vtype is known; fall back to the
+     * historical sign-extending load in that case. */
+    return (t != NULL && t->is_unsigned) ? "movzbq" : "movsbq";
+}
+
 static void emit_var_load(ASTNode *node)
 {
     int is_char = (node->val_type && node->val_type->kind == TYPE_CHAR) ||
                   (node->vtype == TYPE_CHAR);
-    const char *op = is_char ? "movsbq" : "movq";
+    const char *op = load_op_for(node->val_type, is_char);
     if (node->is_global)
     {
         emit_line("\t%s %s(%%rip), %%rax", op, node->name);
@@ -160,6 +183,11 @@ static void gen_binary(ASTNode *node)
     emit_line("\tpopq %%rcx"); /* %rcx = left operand, %rax = right */
     pushed_count--;
 
+    /* Decided from the *operand* types (not the result type) so that div,
+     * mod, >> and the ordered comparisons pick the right flavour of x86
+     * instruction. Must agree exactly with the folding done in semantic.c. */
+    int uns = binary_is_unsigned(node->left->val_type, node->right->val_type);
+
     switch (node->op)
     {
     case OP_ADD:
@@ -173,20 +201,28 @@ static void gen_binary(ASTNode *node)
         emit_line("\timulq %%rcx, %%rax");
         break;
     case OP_DIV:
+    case OP_MOD:
         /* %r10 is caller-saved scratch, so no callee-saved register is
          * clobbered (the old code used %rbx, which the ABI requires a
-         * function to preserve). */
+         * function to preserve). Signed division sign-extends the dividend
+         * into %rdx:%rax with cqto; unsigned division requires %rdx to be
+         * *cleared* instead, and uses divq. */
         emit_line("\tmovq %%rax, %%r10"); /* %r10 = divisor */
         emit_line("\tmovq %%rcx, %%rax"); /* %rax = dividend */
-        emit_line("\tcqto");              /* sign-extend %rax into %rdx:%rax */
-        emit_line("\tidivq %%r10");
-        break;
-    case OP_MOD:
-        emit_line("\tmovq %%rax, %%r10"); /* %r10 = divisor */
-        emit_line("\tmovq %%rcx, %%rax"); /* %rax = dividend */
-        emit_line("\tcqto");
-        emit_line("\tidivq %%r10");
-        emit_line("\tmovq %%rdx, %%rax"); /* %rdx = remainder */
+        if (uns)
+        {
+            emit_line("\txorq %%rdx, %%rdx");
+            emit_line("\tdivq %%r10");
+        }
+        else
+        {
+            emit_line("\tcqto"); /* sign-extend %rax into %rdx:%rax */
+            emit_line("\tidivq %%r10");
+        }
+        if (node->op == OP_MOD)
+        {
+            emit_line("\tmovq %%rdx, %%rax"); /* %rdx = remainder */
+        }
         break;
     case OP_BIT_AND:
         emit_line("\tandq %%rcx, %%rax");
@@ -198,13 +234,19 @@ static void gen_binary(ASTNode *node)
         emit_line("\txorq %%rcx, %%rax");
         break;
     case OP_SHL:
-    case OP_SHR:
         /* %rcx = value (left), %rax = shift count (right). */
         emit_line("\tmovq %%rcx, %%r11");
         emit_line("\tmovq %%rax, %%rcx");
         emit_line("\tmovq %%r11, %%rax");
-        emit_line(node->op == OP_SHL ? "\tshlq %%cl, %%rax"
-                                     : "\tsarq %%cl, %%rax");
+        emit_line("\tshlq %%cl, %%rax");
+        break;
+    case OP_SHR:
+        emit_line("\tmovq %%rcx, %%r11");
+        emit_line("\tmovq %%rax, %%rcx");
+        emit_line("\tmovq %%r11, %%rax");
+        /* sarq fills with the sign bit, shrq with zeros: `>>` is an
+         * arithmetic shift on signed values and a logical one on unsigned. */
+        emit_line(uns ? "\tshrq %%cl, %%rax" : "\tsarq %%cl, %%rax");
         break;
     case OP_AND:
     case OP_OR:
@@ -221,22 +263,24 @@ static void gen_binary(ASTNode *node)
         break;
     case OP_LT:
         emit_line("\tcmpq %%rax, %%rcx");
-        emit_line("\tsetl %%al");
+        /* setb/setbe/seta/setae are the unsigned counterparts of
+         * setl/setle/setg/setge; pointers and `unsigned int` need them. */
+        emit_line(uns ? "\tsetb %%al" : "\tsetl %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_LE:
         emit_line("\tcmpq %%rax, %%rcx");
-        emit_line("\tsetle %%al");
+        emit_line(uns ? "\tsetbe %%al" : "\tsetle %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_GT:
         emit_line("\tcmpq %%rax, %%rcx");
-        emit_line("\tsetg %%al");
+        emit_line(uns ? "\tseta %%al" : "\tsetg %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_GE:
         emit_line("\tcmpq %%rax, %%rcx");
-        emit_line("\tsetge %%al");
+        emit_line(uns ? "\tsetae %%al" : "\tsetge %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     }
@@ -460,16 +504,17 @@ static void gen_expr(ASTNode *node)
     case AST_DEREF:
     {
         gen_expr(node->left); /* %rax = memory address */
+        /* An array-typed dereference -- `a[i]` of a 2-D array, which
+         * desugars to `*(a + i)` -- denotes that row's *address*, and
+         * gen_expr(node->left) has just produced it. Loading would instead
+         * read the row's first element. */
+        if (node->val_type && node->val_type->kind == TYPE_ARRAY)
+        {
+            break;
+        }
         int is_char = (node->val_type && node->val_type->kind == TYPE_CHAR) ||
                       (node->vtype == TYPE_CHAR);
-        if (is_char)
-        {
-            emit_line("\tmovsbq (%%rax), %%rax");
-        }
-        else
-        {
-            emit_line("\tmovq (%%rax), %%rax");
-        }
+        emit_line("\t%s (%%rax), %%rax", load_op_for(node->val_type, is_char));
         break;
     }
     case AST_BINARY_OP:
@@ -492,14 +537,7 @@ static void gen_expr(ASTNode *node)
         gen_addr(node);
         int is_char = (node->val_type && node->val_type->kind == TYPE_CHAR) ||
                       (node->vtype == TYPE_CHAR);
-        if (is_char)
-        {
-            emit_line("\tmovsbq (%%rax), %%rax");
-        }
-        else
-        {
-            emit_line("\tmovq (%%rax), %%rax");
-        }
+        emit_line("\t%s (%%rax), %%rax", load_op_for(node->val_type, is_char));
         break;
     }
     default:
@@ -602,17 +640,24 @@ static void gen_for(ASTNode *node)
 static void gen_switch(ASTNode *node)
 {
     int id = label_counter++;
+
+    /* Case / default labels may be nested inside blocks and nested control
+     * flow, so collect them recursively. A nested switch owns its own labels
+     * and pushes its own id, so it is not collected here. */
+    ASTNode **cases = NULL;
+    int ncases = 0;
+    int cap = 0;
+    collect_switch_cases(node->body, &cases, &ncases, &cap);
+
     int index = 0;
     int has_default = 0;
-
-    /* Number the case labels and remember whether a default exists. */
-    for (ASTNode *item = node->body; item != NULL; item = item->next)
+    for (int i = 0; i < ncases; i++)
     {
-        if (item->type == AST_CASE)
+        if (cases[i]->type == AST_CASE)
         {
-            item->case_index = index++;
+            cases[i]->case_index = index++;
         }
-        else if (item->type == AST_DEFAULT)
+        else if (cases[i]->type == AST_DEFAULT)
         {
             has_default = 1;
         }
@@ -622,13 +667,15 @@ static void gen_switch(ASTNode *node)
 
     break_kind[break_sp] = CTX_SWITCH;
     break_id[break_sp++] = id; /* break -> .L_switch_end */
-    for (ASTNode *item = node->body; item != NULL; item = item->next)
+    switch_id[switch_sp++] = id;
+
+    for (int i = 0; i < ncases; i++)
     {
-        if (item->type == AST_CASE)
+        if (cases[i]->type == AST_CASE)
         {
-            emit_line("\tmovq $%lld, %%r11", item->value);
+            emit_line("\tmovq $%lld, %%r11", cases[i]->value);
             emit_line("\tcmpq %%r11, %%rax");
-            emit_line("\tje .L_case_%d_%d", id, item->case_index);
+            emit_line("\tje .L_case_%d_%d", id, cases[i]->case_index);
         }
     }
     if (has_default)
@@ -640,23 +687,17 @@ static void gen_switch(ASTNode *node)
         emit_line("\tjmp .L_switch_end_%d", id);
     }
 
+    /* Labels are emitted at their source position by gen_stmt_one (which
+     * handles nested cases too); here we only walk the body in order. */
     for (ASTNode *item = node->body; item != NULL; item = item->next)
     {
-        if (item->type == AST_CASE)
-        {
-            emit_line(".L_case_%d_%d:", id, item->case_index);
-        }
-        else if (item->type == AST_DEFAULT)
-        {
-            emit_line(".L_default_%d:", id);
-        }
-        else
-        {
-            gen_stmt_one(item);
-        }
+        gen_stmt_one(item);
     }
     emit_line(".L_switch_end_%d:", id);
+
+    switch_sp--;
     break_sp--;
+    free(cases);
 }
 
 static void gen_return(ASTNode *node)
@@ -705,7 +746,16 @@ static int gen_stmt_one(ASTNode *n)
         gen_return(n);
         return 1;
     case AST_CASE:
+        if (switch_sp > 0)
+        {
+            emit_line(".L_case_%d_%d:", switch_id[switch_sp - 1], n->case_index);
+        }
+        return 0;
     case AST_DEFAULT:
+        if (switch_sp > 0)
+        {
+            emit_line(".L_default_%d:", switch_id[switch_sp - 1]);
+        }
         return 0;
     default:
         gen_expr(n); /* expression statement */
@@ -834,6 +884,7 @@ int codegen_generate(ASTNode *root, FILE *output, int windows_target)
     pushed_count = 0;
     break_sp = 0;
     continue_sp = 0;
+    switch_sp = 0;
     target_windows = windows_target;
     gen_program(root);
     return error_count() > 0 ? 1 : 0;

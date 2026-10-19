@@ -23,10 +23,34 @@ static Symbol *resolve_var(ASTNode *node);
 static int count_params(ASTNode *fn);
 static int count_args(ASTNode *call);
 static int fold_const(ASTNode *node, long long *out);
+static void check_object_complete(ASTNode *decl);
 
 /* ------------------------------------------------------------------ */
 /* Constant folding                                                   */
 /* ------------------------------------------------------------------ */
+
+/* Rejects objects whose type reserves no storage: incomplete struct types
+ * (only forward-declared) and zero-length arrays. Such a local used to get
+ * stack_offset 0, i.e. the saved %rbp slot, which crashed on the first
+ * store. Every declared object must own at least one real frame slot. */
+static void check_object_complete(ASTNode *decl)
+{
+    Type *t = decl->val_type;
+    if (t == NULL)
+    {
+        return;
+    }
+    if (t->kind == TYPE_ARRAY && t->array_size <= 0)
+    {
+        report_error(decl->line, decl->col,
+                     "array '%s' must have a positive size", decl->name);
+    }
+    else if (!type_is_complete(t))
+    {
+        report_error(decl->line, decl->col,
+                     "storage size of '%s' isn't known", decl->name);
+    }
+}
 
 static int fold_const(ASTNode *node, long long *out)
 {
@@ -208,6 +232,7 @@ static void sem_decl_pass(ASTNode *prog)
             Symbol *sym = symbol_insert(d->name, d->val_type, 1);
             (void)sym;
             d->is_global = 1;
+            check_object_complete(d);
             if (d->left != NULL)
             {
                 long long v;
@@ -322,7 +347,13 @@ static void check_expr(ASTNode *expr)
         break;
     case AST_DEREF:
         check_expr(expr->left);
-        if (expr->left->val_type == NULL || expr->left->val_type->kind != TYPE_PTR)
+        /* The operand may be a pointer *or* an array expression: `a[i][j]`
+         * desugars to `*(a[i] + j)` where the inner `a[i]` is itself a
+         * dereference of array type (`int[3]`). Such a dereference denotes
+         * the row's address -- the load below is what would be wrong. */
+        if (expr->left->val_type == NULL ||
+            (expr->left->val_type->kind != TYPE_PTR &&
+             expr->left->val_type->kind != TYPE_ARRAY))
         {
             report_error(expr->line, expr->col, "cannot dereference non-pointer type");
             expr->val_type = type_int();
@@ -331,7 +362,18 @@ static void check_expr(ASTNode *expr)
         else
         {
             expr->val_type = expr->left->val_type->base;
-            expr->vtype = expr->val_type->kind;
+            if (expr->val_type == NULL || expr->val_type->kind == TYPE_VOID)
+            {
+                /* e.g. `void *p; *p;` — nothing to load/store through it. */
+                report_error(expr->line, expr->col,
+                             "cannot dereference a 'void *' pointer");
+                expr->val_type = type_int();
+                expr->vtype = TYPE_INT;
+            }
+            else
+            {
+                expr->vtype = expr->val_type->kind;
+            }
         }
         break;
     case AST_BINARY_OP:
@@ -448,7 +490,15 @@ static void check_expr(ASTNode *expr)
         }
         else
         {
-            expr->val_type = type_int();
+            /* Simplified usual arithmetic conversions: the result is
+             * unsigned when either operand is `unsigned int` or a pointer.
+             * (Both operands are already 64-bit here, so rank reduces to
+             * "unsigned int wins"; `unsigned char` deliberately does not
+             * qualify -- see binary_is_unsigned().) */
+            expr->val_type = binary_is_unsigned(expr->left->val_type,
+                                                expr->right->val_type)
+                                 ? type_uint()
+                                 : type_int();
             expr->vtype = TYPE_INT;
         }
         break;
@@ -474,6 +524,14 @@ static void check_expr(ASTNode *expr)
             report_error(expr->line, expr->col,
                          "left side of '=' must be an lvalue");
         }
+        if (expr->left->val_type != NULL &&
+            expr->left->val_type->kind == TYPE_ARRAY)
+        {
+            /* `a = 5;` where a is an array would store one element over the
+             * array storage; C forbids assigning to an array. */
+            report_error(expr->line, expr->col,
+                         "cannot assign to an array");
+        }
         check_value(expr->right);
         expr->val_type = expr->left->val_type;
         expr->vtype = expr->left->vtype;
@@ -482,7 +540,8 @@ static void check_expr(ASTNode *expr)
         check_call(expr);
         break;
     case AST_POSTFIX:
-        if (expr->left->type != AST_VAR_REF && expr->left->type != AST_DEREF)
+        if (expr->left->type != AST_VAR_REF && expr->left->type != AST_DEREF &&
+            expr->left->type != AST_MEMBER_ACCESS)
         {
             report_error(expr->line, expr->col,
                          "'++'/'--' operand must be an lvalue");
@@ -494,6 +553,12 @@ static void check_expr(ASTNode *expr)
         else
         {
             check_expr(expr->left);
+        }
+        if (expr->left->val_type != NULL &&
+            expr->left->val_type->kind == TYPE_ARRAY)
+        {
+            report_error(expr->line, expr->col,
+                         "'++'/'--' cannot be applied to an array");
         }
         expr->val_type = expr->left->val_type;
         expr->vtype = expr->left->vtype;
@@ -541,22 +606,26 @@ static void check_expr(ASTNode *expr)
 static void check_switch(ASTNode *node, CheckCtx *ctx)
 {
     check_value(node->cond);
-    int count = 0;
-    for (ASTNode *item = node->body; item != NULL; item = item->next)
-    {
-        if (item->type == AST_CASE)
-        {
-            count++;
-        }
-    }
-    long long *seen = count > 0 ? xmalloc(sizeof(long long) * (size_t)count)
-                                : NULL;
+
+    /* Labels may be nested inside blocks / if / loops within the switch
+     * body. They all belong to this switch (a nested switch owns its own),
+     * so collect them recursively instead of only scanning the top level. */
+    ASTNode **cases = NULL;
+    int ncases = 0;
+    int cap = 0;
+    collect_switch_cases(node->body, &cases, &ncases, &cap);
+
+    long long *seen = ncases > 0 ? xmalloc(sizeof(long long) * (size_t)ncases)
+                                 : NULL;
     int nseen = 0;
     int saw_default = 0;
-    for (ASTNode *item = node->body; item != NULL; item = item->next)
+    int index = 0;
+    for (int i = 0; i < ncases; i++)
     {
+        ASTNode *item = cases[i];
         if (item->type == AST_CASE)
         {
+            item->case_index = index++;
             long long v;
             if (!fold_const(item->left, &v))
             {
@@ -565,9 +634,9 @@ static void check_switch(ASTNode *node, CheckCtx *ctx)
             }
             else
             {
-                for (int i = 0; i < nseen; i++)
+                for (int j = 0; j < nseen; j++)
                 {
-                    if (seen[i] == v)
+                    if (seen[j] == v)
                     {
                         report_error(item->line, item->col,
                                      "duplicate case value %lld", v);
@@ -589,6 +658,8 @@ static void check_switch(ASTNode *node, CheckCtx *ctx)
         }
     }
     free(seen);
+    free(cases);
+
     scope_push();
     ctx->switch_depth++;
     check_stmt(node->body, ctx);
@@ -612,8 +683,16 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
             }
             else
             {
+                check_object_complete(n);
                 Symbol *sym = symbol_insert(n->name, n->val_type, 0);
                 int sz = n->val_type ? n->val_type->size : 8;
+                if (sz <= 0)
+                {
+                    /* Error already reported by check_object_complete(); keep
+                     * the frame layout sane by reserving one real slot so this
+                     * variable never aliases the saved %rbp at offset 0. */
+                    sz = 8;
+                }
                 sz = (sz + 7) / 8 * 8;
                 *ctx->frame += sz;
                 sym->stack_offset = -(*ctx->frame);
@@ -637,6 +716,13 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
             break;
         case AST_RETURN:
             check_value(n->left);
+            if (n->left != NULL && n->left->val_type != NULL &&
+                (n->left->val_type->kind == TYPE_STRUCT ||
+                 n->left->val_type->kind == TYPE_ARRAY))
+            {
+                report_error(n->line, n->col,
+                             "cannot return an aggregate by value");
+            }
             break;
         case AST_IF:
             check_value(n->cond);

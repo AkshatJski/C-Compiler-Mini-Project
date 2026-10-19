@@ -127,6 +127,8 @@ static Token lex_ident_or_keyword(Lexer *lexer)
     static const struct Keyword keywords[] = {
         {"int", TOKEN_KEYWORD_INT},
         {"char", TOKEN_KEYWORD_CHAR},
+        {"signed", TOKEN_KEYWORD_SIGNED},
+        {"unsigned", TOKEN_KEYWORD_UNSIGNED},
         {"void", TOKEN_KEYWORD_VOID},
         {"if", TOKEN_KEYWORD_IF},
         {"else", TOKEN_KEYWORD_ELSE},
@@ -206,6 +208,12 @@ static Token lex_number(Lexer *lexer)
  * and advances past it. */
 static int read_escape(Lexer *lexer)
 {
+    if (at_end(lexer))
+    {
+        /* The literal is unterminated at end of file; the caller reports it
+         * and the stray byte must not be consumed (it is the terminator). */
+        return 0;
+    }
     char c = advance(lexer);
     switch (c)
     {
@@ -262,7 +270,12 @@ static Token lex_char_literal(Lexer *lexer)
     advance(lexer); /* opening ' */
 
     int value;
-    if (peek(lexer) == '\'')
+    if (at_end(lexer))
+    {
+        report_error(start_line, start_col, "unterminated character literal");
+        value = 0;
+    }
+    else if (peek(lexer) == '\'')
     {
         report_error(start_line, start_col, "empty character literal");
         value = 0;
@@ -277,7 +290,7 @@ static Token lex_char_literal(Lexer *lexer)
         value = (unsigned char)advance(lexer);
     }
 
-    if (peek(lexer) == '\'')
+    if (!at_end(lexer) && peek(lexer) == '\'')
     {
         advance(lexer); /* closing ' */
     }
@@ -495,6 +508,10 @@ const char *token_type_to_string(TokenType type)
         return "'int'";
     case TOKEN_KEYWORD_CHAR:
         return "'char'";
+    case TOKEN_KEYWORD_SIGNED:
+        return "'signed'";
+    case TOKEN_KEYWORD_UNSIGNED:
+        return "'unsigned'";
     case TOKEN_KEYWORD_VOID:
         return "'void'";
     case TOKEN_KEYWORD_IF:

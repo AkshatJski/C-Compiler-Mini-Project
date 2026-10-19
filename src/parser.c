@@ -91,11 +91,35 @@ static int parser_expect(TokenType type, const char *message)
 static int is_type_start(TokenType type)
 {
     return type == TOKEN_KEYWORD_INT || type == TOKEN_KEYWORD_CHAR ||
+           type == TOKEN_KEYWORD_SIGNED || type == TOKEN_KEYWORD_UNSIGNED ||
            type == TOKEN_KEYWORD_VOID || type == TOKEN_KEYWORD_STRUCT;
 }
 
 static Type *parse_type_specifier(void)
 {
+    /* `signed` / `unsigned`, optionally followed by `int` or `char`.
+     * A bare `unsigned` means `unsigned int` (C's rule), and `unsigned`
+     * with no base type before a declarator or `*` must still yield a
+     * usable type, so the base type is resolved here rather than by the
+     * caller. */
+    if (parser.current.type == TOKEN_KEYWORD_SIGNED ||
+        parser.current.type == TOKEN_KEYWORD_UNSIGNED)
+    {
+        int uns = parser.current.type == TOKEN_KEYWORD_UNSIGNED;
+        parser_advance();
+        if (parser.current.type == TOKEN_KEYWORD_INT)
+        {
+            parser_advance();
+            return uns ? type_uint() : type_int();
+        }
+        if (parser.current.type == TOKEN_KEYWORD_CHAR)
+        {
+            parser_advance();
+            return uns ? type_uchar() : type_char();
+        }
+        /* Bare `unsigned` == `unsigned int`; `signed` == `int`. */
+        return uns ? type_uint() : type_int();
+    }
     if (parser.current.type == TOKEN_KEYWORD_INT)
     {
         parser_advance();
@@ -113,6 +137,8 @@ static Type *parse_type_specifier(void)
     }
     if (parser.current.type == TOKEN_KEYWORD_STRUCT)
     {
+        int sline = parser.current.line;
+        int scol = parser.current.col;
         parser_advance();
         if (parser.current.type != TOKEN_IDENT)
         {
@@ -132,7 +158,16 @@ static Type *parse_type_specifier(void)
              * self-referential member such as `struct Node *next;` resolves to
              * this same type instead of an empty shadow copy. */
             Type *st = struct_lookup(tag);
-            if (st == NULL || st->members != NULL)
+            if (st != NULL && st->members != NULL)
+            {
+                /* A struct type can only be defined once; silently re-binding
+                 * the tag to a fresh type would leave earlier objects on the
+                 * old layout while later ones use the new one. */
+                report_error(sline, scol, "redefinition of 'struct %s'", tag);
+                st = type_struct(tag);
+                struct_register(tag, st);
+            }
+            else if (st == NULL)
             {
                 st = type_struct(tag);
                 struct_register(tag, st);
@@ -158,6 +193,14 @@ static Type *parse_type_specifier(void)
                 }
                 char *mname = xstrdup(parser.current.value);
                 parser_advance();
+                if (base == st || !type_is_complete(base))
+                {
+                    /* Rejects `struct A { struct A a; }` (direct containment,
+                     * even after earlier members made the size non-zero) and
+                     * members of an undefined struct type. */
+                    report_error(parser.previous.line, parser.previous.col,
+                                 "member '%s' has incomplete type", mname);
+                }
                 struct_add_member(st, mname, base);
                 free(mname);
                 if (!parser_expect(TOKEN_SEMICOLON, "expected ';' after struct member"))
@@ -730,7 +773,8 @@ static ASTNode *parse_unary(void)
         {
             return NULL;
         }
-        if (target->type != AST_VAR_REF && target->type != AST_DEREF)
+        if (target->type != AST_VAR_REF && target->type != AST_DEREF &&
+            target->type != AST_MEMBER_ACCESS)
         {
             report_error(line, col, "'++'/'--' operand must be an lvalue");
             return NULL;
@@ -866,7 +910,8 @@ static ASTNode *parse_primary(void)
         if (parser.current.type == TOKEN_PLUS_PLUS ||
             parser.current.type == TOKEN_MINUS_MINUS)
         {
-            if (node->type != AST_VAR_REF && node->type != AST_DEREF)
+            if (node->type != AST_VAR_REF && node->type != AST_DEREF &&
+                node->type != AST_MEMBER_ACCESS)
             {
                 report_error(parser.current.line, parser.current.col,
                              "'++'/'--' operand must be an lvalue");
@@ -953,6 +998,56 @@ static ASTNode *parse_primary(void)
 /* Statements                                                          */
 /* ------------------------------------------------------------------ */
 
+/* Reads zero or more `[N]` dimensions following a declarator name and
+ * returns the type with every dimension applied. Returns NULL if a
+ * dimension is malformed (the diagnostic is reported here), and sets
+ * *is_array when at least one dimension was consumed.
+ *
+ * C reads dimensions left to right but nests them inside out: `int a[2][3]`
+ * is "2 rows of 3 ints", so the type must be built as
+ * array[2] of (array[3] of int). Applying them in source order instead
+ * would produce array[3] of array[2] of int -- the same total size but a
+ * 16-byte row stride where 24 is required, silently corrupting a[i][j].
+ * The dimensions are therefore collected first and applied in reverse. */
+static Type *parse_array_dimensions(Type *base, int *is_array)
+{
+    enum { MAX_DIMS = 8 };
+    int dims[MAX_DIMS];
+    int ndims = 0;
+
+    while (parser_match(TOKEN_LBRACKET))
+    {
+        if (parser.current.type != TOKEN_INT_LIT)
+        {
+            report_error(parser.current.line, parser.current.col,
+                         "array size must be an integer constant");
+            return NULL;
+        }
+        if (ndims == MAX_DIMS)
+        {
+            report_error(parser.current.line, parser.current.col,
+                         "too many array dimensions (limit is %d)", MAX_DIMS);
+            return NULL;
+        }
+        dims[ndims++] = (int)strtoll(parser.current.value, NULL, 0);
+        parser_advance();
+        if (!parser_expect(TOKEN_RBRACKET, "expected ']' after array size"))
+        {
+            return NULL;
+        }
+    }
+    if (ndims == 0)
+    {
+        return base;
+    }
+    for (int i = ndims - 1; i >= 0; i--)
+    {
+        base = type_array(base, dims[i]);
+    }
+    *is_array = 1;
+    return base;
+}
+
 static ASTNode *parse_var_decl(Type *base_type)
 {
     ASTNode *first = NULL;
@@ -977,27 +1072,28 @@ static ASTNode *parse_var_decl(Type *base_type)
         decl->val_type = decl_type;
         decl->name = xstrdup(parser.current.value);
         parser_advance();
-        /* Check for array dimension: int arr[10]; */
-        if (parser_match(TOKEN_LBRACKET))
+        /* Array dimensions: int arr[10], matrix[2][3] */
+        int is_array = 0;
+        decl_type = parse_array_dimensions(decl_type, &is_array);
+        if (decl_type == NULL)
         {
-            if (parser.current.type != TOKEN_INT_LIT)
-            {
-                report_error(parser.current.line, parser.current.col,
-                             "array size must be an integer constant");
-                return NULL;
-            }
-            int arr_sz = (int)strtoll(parser.current.value, NULL, 0);
-            parser_advance();
-            if (!parser_expect(TOKEN_RBRACKET, "expected ']' after array size"))
-            {
-                return NULL;
-            }
-            decl_type = type_array(decl_type, arr_sz);
-            decl->vtype = decl_type->kind;
-            decl->val_type = decl_type;
+            return NULL;
         }
+        decl->vtype = decl_type->kind;
+        decl->val_type = decl_type;
         if (parser_match(TOKEN_ASSIGN))
         {
+            if (is_array)
+            {
+                /* This subset has no initializer lists, so a scalar cannot
+                 * initialize an array. Reject rather than silently emitting a
+                 * store that clobbers part of the array. */
+                report_error(parser.previous.line, parser.previous.col,
+                             "array '%s' cannot be initialized with a scalar "
+                             "(initializer lists are not supported)",
+                             decl->name);
+                return NULL;
+            }
             ASTNode *init = parse_expression();
             if (init == NULL)
             {
@@ -1468,6 +1564,13 @@ static int parse_param_list(ASTNode *fn)
         {
             ptype = type_ptr(ptype);
         }
+        if (!type_is_complete(ptype))
+        {
+            /* e.g. an incomplete struct passed by value, or a non-pointer
+             * `void` parameter after the first. */
+            report_error(parser.current.line, parser.current.col,
+                         "parameter has incomplete type");
+        }
         if (parser.current.type != TOKEN_IDENT)
         {
             report_error(parser.current.line, parser.current.col,
@@ -1535,21 +1638,11 @@ static ASTNode *parse_global_vars(char *first_name, Type *base_type, int line,
         {
             decl_type = type_ptr(decl_type);
         }
-        if (parser_match(TOKEN_LBRACKET))
+        int is_array = 0;
+        decl_type = parse_array_dimensions(decl_type, &is_array);
+        if (decl_type == NULL)
         {
-            if (parser.current.type != TOKEN_INT_LIT)
-            {
-                report_error(parser.current.line, parser.current.col,
-                             "array size must be an integer constant");
-                return NULL;
-            }
-            int arr_sz = (int)strtoll(parser.current.value, NULL, 0);
-            parser_advance();
-            if (!parser_expect(TOKEN_RBRACKET, "expected ']' after array size"))
-            {
-                return NULL;
-            }
-            decl_type = type_array(decl_type, arr_sz);
+            return NULL;
         }
         ASTNode *decl = ast_node(AST_VAR_DECL, line, col);
         decl->vtype = decl_type->kind;
@@ -1558,6 +1651,17 @@ static ASTNode *parse_global_vars(char *first_name, Type *base_type, int line,
         decl->is_global = 1;
         if (parser_match(TOKEN_ASSIGN))
         {
+            if (decl_type->kind == TYPE_ARRAY || decl_type->kind == TYPE_STRUCT)
+            {
+                /* gen_data() emits .zero for aggregates and drops any parsed
+                 * initializer, so accepting one here would silently discard it.
+                 * This subset has no aggregate initializer lists. */
+                report_error(parser.previous.line, parser.previous.col,
+                             "aggregate '%s' cannot be initialized with a "
+                             "scalar (initializer lists are not supported)",
+                             name);
+                return NULL;
+            }
             decl->left = parse_expression();
             if (decl->left == NULL)
             {
@@ -1633,6 +1737,14 @@ ASTNode *parse_program(Lexer *lexer)
             {
                 report_error(line, col,
                              "function return type 'char' is not supported");
+            }
+            else if (type->kind == TYPE_STRUCT)
+            {
+                /* Returning a struct by value needs a hidden-pointer ABI that
+                 * this compiler does not implement; reject it with a clear
+                 * message instead of failing during code generation. */
+                report_error(line, col,
+                             "function return type 'struct' is not supported");
             }
             decl = parse_function_after_name(name, type, line, col);
             if (decl == NULL)

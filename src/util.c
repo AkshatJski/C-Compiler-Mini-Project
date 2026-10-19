@@ -44,6 +44,18 @@ char *xstrdup(const char *s)
     return copy;
 }
 
+void *xrealloc(void *ptr, size_t size)
+{
+    void *p = realloc(ptr, size);
+    if (p == NULL)
+    {
+        fprintf(stderr, "fatal: out of memory allocating %lu bytes\n",
+                (unsigned long)size);
+        exit(EXIT_FAILURE);
+    }
+    return p;
+}
+
 void report_error(int line, int col, const char *fmt, ...)
 {
     va_list ap;
@@ -77,9 +89,14 @@ void error_reset(void)
 /* Phase 3 Type System Constructors & Helpers                         */
 /* ------------------------------------------------------------------ */
 
-static Type g_type_int = {TYPE_INT, NULL, 0, NULL, NULL, 8, 8};
-static Type g_type_char = {TYPE_CHAR, NULL, 0, NULL, NULL, 1, 1};
-static Type g_type_void = {TYPE_VOID, NULL, 0, NULL, NULL, 0, 1};
+static Type g_type_int = {TYPE_INT, NULL, 0, NULL, NULL, 8, 8, 0};
+static Type g_type_char = {TYPE_CHAR, NULL, 0, NULL, NULL, 1, 1, 0};
+static Type g_type_void = {TYPE_VOID, NULL, 0, NULL, NULL, 0, 1, 0};
+/* Same layout/size as the signed pair above; only is_unsigned differs.
+ * Both are 64-bit (resp. 1 byte) so `unsigned` never changes how much
+ * storage an object gets, only how its value is interpreted. */
+static Type g_type_uint = {TYPE_INT, NULL, 0, NULL, NULL, 8, 8, 1};
+static Type g_type_uchar = {TYPE_CHAR, NULL, 0, NULL, NULL, 1, 1, 1};
 
 Type *type_int(void)
 {
@@ -94,6 +111,16 @@ Type *type_char(void)
 Type *type_void(void)
 {
     return &g_type_void;
+}
+
+Type *type_uint(void)
+{
+    return &g_type_uint;
+}
+
+Type *type_uchar(void)
+{
+    return &g_type_uchar;
 }
 
 Type *type_ptr(Type *base)
@@ -125,6 +152,59 @@ int type_is_pointer(const Type *t)
 int type_is_integer(const Type *t)
 {
     return t != NULL && (t->kind == TYPE_INT || t->kind == TYPE_CHAR);
+}
+
+int binary_is_unsigned(const Type *left, const Type *right)
+{
+    /* A narrow `unsigned char` operand does not make the operation
+     * unsigned: it is zero-extended into the 64-bit domain, so signed
+     * div/mod/shift/compare give the same answers C's integer promotion
+     * would. `unsigned int` (64-bit, can hold values above 2^63) genuinely
+     * does, and so do pointers -- addresses order as unsigned. An
+     * array-typed operand counts as a pointer too, because this compiler
+     * treats arrays in binary expressions as already decayed (see
+     * type_is_pointer); that is what makes `a[i] < a[j]` on a 2-D array
+     * compare correctly. NULL operands never qualify. */
+    if (left != NULL && left->kind == TYPE_INT && left->is_unsigned)
+    {
+        return 1;
+    }
+    if (right != NULL && right->kind == TYPE_INT && right->is_unsigned)
+    {
+        return 1;
+    }
+    if (type_is_pointer(left) || type_is_pointer(right))
+    {
+        return 1;
+    }
+    return 0;
+}
+
+/* "Complete" = the type reserves storage. Incomplete types (void, and
+ * struct tags that were only forward-declared / have no members yet) have
+ * size 0 and cannot back an object; zero-length arrays also count as
+ * incomplete here. Objects of incomplete type previously received a
+ * 0-byte slot at stack_offset 0 (the saved %rbp) and crashed at runtime. */
+int type_is_complete(const Type *t)
+{
+    if (t == NULL)
+    {
+        return 0;
+    }
+    switch (t->kind)
+    {
+    case TYPE_INT:
+    case TYPE_CHAR:
+    case TYPE_PTR:
+        return 1;
+    case TYPE_ARRAY:
+        return t->array_size > 0 && type_is_complete(t->base);
+    case TYPE_STRUCT:
+        return t->members != NULL && t->size > 0;
+    case TYPE_VOID:
+    default:
+        return 0;
+    }
 }
 
 Type *type_struct(const char *tag)
@@ -175,5 +255,44 @@ void struct_add_member(Type *struct_type, const char *name, Type *member_type)
     if (m_align > struct_type->align)
     {
         struct_type->align = m_align;
+    }
+}
+
+void collect_switch_cases(ASTNode *body, ASTNode ***vec, int *n, int *cap)
+{
+    for (ASTNode *s = body; s != NULL; s = s->next)
+    {
+        switch (s->type)
+        {
+        case AST_CASE:
+        case AST_DEFAULT:
+            if (*n == *cap)
+            {
+                *cap = (*cap > 0) ? (*cap * 2) : 8;
+                *vec = xrealloc(*vec, sizeof(ASTNode *) * (size_t)(*cap));
+            }
+            (*vec)[(*n)++] = s;
+            break;
+        case AST_BLOCK:
+            collect_switch_cases(s->body, vec, n, cap);
+            break;
+        case AST_IF:
+            collect_switch_cases(s->body, vec, n, cap);
+            collect_switch_cases(s->right, vec, n, cap);
+            break;
+        case AST_WHILE:
+        case AST_DO_WHILE:
+            collect_switch_cases(s->body, vec, n, cap);
+            break;
+        case AST_FOR:
+            collect_switch_cases(s->left, vec, n, cap);
+            collect_switch_cases(s->body, vec, n, cap);
+            collect_switch_cases(s->right, vec, n, cap);
+            break;
+        case AST_SWITCH:
+            break; /* nested switch owns its own case labels */
+        default:
+            break;
+        }
     }
 }
