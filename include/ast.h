@@ -97,6 +97,9 @@ typedef struct ASTNode {
     TypeKind vtype;
     Type *val_type;
     char *name;
+    /* AST_STRING only: the literal's byte count, because the decoded text may
+     * contain NUL bytes and strlen() would truncate it (BUG-023). */
+    int str_len;
     long long value;
     int line;
     int col;

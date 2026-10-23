@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dump.h"
 #include "tokens.h"
 
@@ -9,12 +10,13 @@
 
 /* Print a token's decoded text with its control characters escaped. Without
  * this, a string literal containing a newline would split the dump across two
- * lines and look like a corrupted token stream. */
-static void print_escaped(FILE *out, const char *s)
+ * lines and look like a corrupted token stream. `length` is explicit because a
+ * literal may contain NUL bytes (BUG-023). */
+static void print_escaped(FILE *out, const char *s, int length)
 {
-    for (const char *p = s; *p != '\0'; p++)
+    for (int i = 0; i < length; i++)
     {
-        unsigned char c = (unsigned char)*p;
+        unsigned char c = (unsigned char)s[i];
         switch (c)
         {
         case '\n':
@@ -57,7 +59,8 @@ void dump_tokens(Lexer *lexer, FILE *out)
         if (tok.value != NULL)
         {
             fputs("  '", out);
-            print_escaped(out, tok.value);
+            print_escaped(out, tok.value,
+                          tok.length > 0 ? tok.length : (int)strlen(tok.value));
             fputc('\'', out);
         }
         fprintf(out, "\n");
@@ -251,7 +254,8 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         break;
     case AST_STRING:
         fputs("STRING \"", out);
-        print_escaped(out, node->name != NULL ? node->name : "");
+        print_escaped(out, node->name != NULL ? node->name : "",
+                      node->name != NULL ? node->str_len : 0);
         fputc('"', out);
         break;
     case AST_CALL:

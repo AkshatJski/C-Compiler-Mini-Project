@@ -911,7 +911,12 @@ static ASTNode *parse_primary(void)
         int line = parser.current.line;
         int col = parser.current.col;
         node = ast_node(AST_STRING, line, col);
-        node->name = xstrdup(parser.current.value);
+        /* xstrdup would stop at the first NUL byte, so copy the full decoded
+         * range explicitly: "\0A" is a two-byte literal (BUG-023). */
+        node->str_len = parser.current.length;
+        node->name = xmalloc((size_t)node->str_len + 1);
+        memcpy(node->name, parser.current.value, (size_t)node->str_len);
+        node->name[node->str_len] = '\0';
         node->value = -1; /* pool index, filled in by codegen */
         parser_advance();
     }

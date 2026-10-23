@@ -72,6 +72,7 @@ static Token make_token(TokenType type, char *value, int line, int col)
     token.value = value;
     token.line = line;
     token.col = col;
+    token.length = 0; /* only string literals set this (BUG-023) */
     return token;
 }
 
@@ -422,7 +423,12 @@ static Token lex_string_literal(Lexer *lexer)
     }
 
     buf[len] = '\0';
-    return make_token(TOKEN_STRING, buf, start_line, start_col);
+
+    /* Keep the byte count: the literal may legitimately contain NUL bytes,
+     * which strlen() could not report (BUG-023). */
+    Token token = make_token(TOKEN_STRING, buf, start_line, start_col);
+    token.length = (int)len;
+    return token;
 }
 
 Token lexer_next_token(Lexer *lexer)

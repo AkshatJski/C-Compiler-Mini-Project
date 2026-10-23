@@ -216,18 +216,29 @@ static void emit_line(const char *fmt, ...)
 
 /* String literals become .rodata entries. Codegen discovers them while walking
  * expressions, so their contents are collected here and the whole section is
- * emitted once at the end of the file. */
-static char **str_pool;
+ * emitted once at the end of the file.
+ *
+ * Each entry carries its byte count, not just a NUL-terminated pointer: a
+ * literal may contain NUL bytes ("\0A") and strlen() would silently truncate
+ * it (BUG-023). */
+typedef struct
+{
+    char *text;
+    int length;
+} StrEntry;
+
+static StrEntry *str_pool;
 static int str_count;
 static int str_cap;
 
-static int intern_string(const char *text)
+static int intern_string(const char *text, int length)
 {
     /* Identical literals share one entry: repeated format strings then cost
      * one rodata line, not one per use. */
     for (int i = 0; i < str_count; i++)
     {
-        if (strcmp(str_pool[i], text) == 0)
+        if (str_pool[i].length == length &&
+            memcmp(str_pool[i].text, text, (size_t)length) == 0)
         {
             return i;
         }
@@ -237,19 +248,22 @@ static int intern_string(const char *text)
         str_cap = str_cap ? str_cap * 2 : 16;
         str_pool = xrealloc(str_pool, (size_t)str_cap * sizeof(*str_pool));
     }
-    str_pool[str_count] = xstrdup(text);
+    str_pool[str_count].text = xmalloc((size_t)length + 1);
+    memcpy(str_pool[str_count].text, text, (size_t)length);
+    str_pool[str_count].text[length] = '\0';
+    str_pool[str_count].length = length;
     return str_count++;
 }
 
 /* Escape a byte string for the assembler's .string pseudo-op. Non-printable
  * bytes become three-digit octal, so no byte can terminate the literal or
- * confuse the assembler. */
-static void emit_string_data(const char *s)
+ * confuse the assembler -- an embedded NUL is written as \000 and is followed
+ * by the rest of the literal. */
+static void emit_string_data(const char *s, int length)
 {
-    size_t n = strlen(s);
-    char *buf = xmalloc(n * 4 + 1);
+    char *buf = xmalloc((size_t)length * 4 + 1);
     size_t w = 0;
-    for (size_t i = 0; i < n; i++)
+    for (int i = 0; i < length; i++)
     {
         unsigned char c = (unsigned char)s[i];
         switch (c)
@@ -311,7 +325,7 @@ static void gen_strings(void)
     for (int i = 0; i < str_count; i++)
     {
         emit_line(".L.str.%d:", i);
-        emit_string_data(str_pool[i]);
+        emit_string_data(str_pool[i].text, str_pool[i].length);
     }
     emit_line(".text");
 }
@@ -872,7 +886,8 @@ static void gen_expr(ASTNode *node)
     case AST_STRING:
     {
         /* The value of a string literal is the address of its first byte. */
-        int idx = intern_string(node->name != NULL ? node->name : "");
+        int idx = intern_string(node->name != NULL ? node->name : "",
+                                node->name != NULL ? node->str_len : 0);
         node->value = idx;
         emit_line("\tleaq .L.str.%d(%%rip), %%rax", idx);
         break;

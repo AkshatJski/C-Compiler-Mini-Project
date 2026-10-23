@@ -468,6 +468,7 @@ static ASTNode *make_string_node(const char *text)
 {
     ASTNode *s = ast_node(AST_STRING, 0, 0);
     s->name = xstrdup(text);
+    s->str_len = (int)strlen(text);
     s->value = -1;
     s->vtype = TYPE_PTR;
     s->val_type = type_ptr(type_char());
