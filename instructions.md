@@ -334,12 +334,23 @@ Everything below is supported by the compiler.
 - `// line comment` and `/* block comment */`
 
 ### Error reporting
-The compiler reports problems with file, line, and column, for example:
+The compiler reports problems with file, line, and column, then quotes the
+offending line and points at the column:
 
 ```
 prog.c:3:9: error: undeclared variable 'y'
+     3 |     int z = y;
+       |             ^
 prog.c: compilation aborted during semantic analysis
 ```
+
+The snippet is deliberately conservative: lines longer than a terminal are
+clipped (a wrapped line makes the caret point at the wrong thing), tabs pass
+through on both rows so they stay aligned, a column past the end of the line
+puts the caret at the end, and a diagnostic with no source position (line 0,
+from a synthesised tree node) prints the message alone. The message line itself
+is unchanged, which is why the `EXPECT-ERROR:` markers in `tests/errors/` still
+match.
 
 Unsupported constructs get one precise message instead of a cascade — a
 preprocessor line says `error: preprocessor directives are not supported by
@@ -357,9 +368,12 @@ Some problems do not stop the compile, so they are reported as warnings:
 
 ```
 prog.c:2:1: warning: control reaches end of non-void function 'maybe'
+     2 | int maybe(int a) { if (a) return 1; }
+       | ^
 ```
 
-- The format is `<file>:<line>:<col>: warning: <message>`.
+- The format is `<file>:<line>:<col>: warning: <message>`, followed by the same
+  source snippet and caret that errors get.
 - A warning **never** changes the exit status: `mycc` still returns 0 and
   writes the assembly.
 - `-w` silences the whole warning channel. Errors are never silenced.
@@ -736,6 +750,23 @@ Why 197? `example.c` computes `fact(5) = 120` plus the sum of primes up to
 exactly 197 proves the compiler works end to end on Windows; `hello.c` then
 proves the Phase 4 calling convention by printing through the C runtime.
 
+### 5.3b Run the five-minute demo
+
+```
+.\demo.bat
+```
+
+Five scenes aimed at someone who does not write code: it prints, it takes their
+name and prints it back, it compiles one program twice and shows 39 lines of
+assembly against 81 with identical behaviour, it proves authorship with
+`--version` and `--sign` (the finished `.exe` carries a mycc string), and it
+finishes by running both test suites and reporting the verdict.
+
+`DEMO.md` is the presenter script for it (60-second, three-minute and
+five-minute cuts, the questions you will be asked, and what to do if something
+breaks live). `demo\expected.txt` is a real captured transcript, for reading out
+loud if the machine misbehaves mid-demo.
+
 ### 5.4 Manual usage (the commands behind the scripts)
 
 ```
@@ -754,12 +785,25 @@ Notes:
   error: `error: unknown target 'beos' (use linux, windows or darwin)`.
 - `-w` silences warnings (errors are unaffected), e.g.
   `mycc.exe -w src.c -o out.s`.
-- `--no-opt` turns off the Phase 5 optimizer (constant folding and
-  constant-condition elimination). Useful for showing what the optimizer
-  actually did: compile the same file twice and compare the assembly, e.g.
-  `mycc.exe demo.c -o opt.s` and `mycc.exe --no-opt demo.c -o plain.s`. The
-  program behaves identically either way — that is the invariant the test suite
-  enforces by running every program in `tests\` through both paths.
+- `--no-opt` turns off the Phase 5 optimizer (constant folding,
+  constant-condition elimination and constant operands). Useful for showing what
+  the optimizer actually did: compile the same file twice and compare the
+  assembly, e.g. `mycc.exe demo.c -o opt.s` and `mycc.exe --no-opt demo.c -o
+  plain.s`. The program behaves identically either way — that is the invariant
+  the test suite enforces by running every program in `tests\` through both
+  paths.
+- `--version` prints what the compiler is, which targets it can emit and whether
+  the optimizer is on, then exits without needing a source file.
+- `--sign` embeds one provenance string in the program's read-only data, so the
+  finished binary can name the compiler that produced it:
+
+  ```
+  mycc.exe --sign hello.c -o build\signed.s
+  gcc -o build\signed.exe build\signed.s
+  strings build\signed.exe | findstr mycc
+  ```
+
+  Off by default — a compiler should not put bytes in a program unless asked.
 - Two diagnostic flags show the compiler's inner workings:
   - `mycc.exe --dump-tokens demos\simple.c` — print the lexer output: every
     token (number, identifier, keyword, operator, bracket) with its

@@ -100,18 +100,30 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   generator emitted. It exists so the two back ends can be compared line for
   line (`mycc hello.c -o a.s` vs `mycc --no-opt hello.c -o b.s`) and so that an
   optimizer bug is always bisectable against a known-good path.
+- **Carets, not line numbers.** Every error and warning quotes the offending
+  line and points at the column:
+
+  ```
+  prog.c:3:5: error: expected ';' after declaration (found 'int')
+       3 |     int y = ;
+         |     ^
+  ```
+
+- `--version` prints what the compiler is and which targets it has; `--sign`
+  embeds a provenance string in the program's data, so `strings prog.exe` shows
+  which compiler built it (off by default).
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
-- **Tests:** 32 positive programs (`tests/01…32`) and 41 rejection tests
-  (`tests/errors/`), 75 checks in total — covering pointers (`12`), arrays
+- **Tests:** 33 positive programs (`tests/01…33`) and 41 rejection tests
+  (`tests/errors/`), 76 checks in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
   (`22`), single evaluation of lvalues (`23`), the BOM (`24`), the
   fall-off-the-end warning (`25`), hello world (`26`), the print built-ins
   (`27`), `extern printf` (`28`), string escapes (`29`), NUL bytes inside
-  a literal (`30`), constant folding (`31`), and constant-condition
-  elimination (`32`). Positive tests
+  a literal (`30`), constant folding (`31`), constant-condition
+  elimination (`32`), and constant operands (`33`). Positive tests
   assert the program's real **output** (`// EXPECT-OUT:`), not just its exit
   code. `tests/diff/` additionally holds programs that are compiled by **both**
   mycc and gcc and required to return the same exit code (`difftest.bat` /
@@ -205,9 +217,10 @@ CALL printf  [3:5]
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (72 checks)
+.\test.bat         # runs the positive + error test suites (76 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
 .\showcase.bat     # end-to-end demo, returns 197
+.\demo.bat         # five-minute demo for a non-technical audience
 ```
 
 ## Quick start (Linux / macOS)
@@ -236,8 +249,16 @@ exit-code suite and the differential test.
 ## Documentation
 
 - [instructions.md](instructions.md) — full manual: language, build/test/showcase, troubleshooting.
+- [DEMO.md](DEMO.md) — presenter script for a non-technical audience (60s / 3min /
+  5min cuts, the questions you will actually be asked, and what to do when
+  something breaks live).
 - [ROADMAP.md](ROADMAP.md) — planned phases: C-fidelity fixes, more language,
-  I/O and the ABI, optimization, diagnostics and tooling. Phases 1–4 and 6 are
-  complete; Phase 5 (optimization) is in progress — constant folding and
-  constant-condition elimination have landed, copy propagation and the register
-  allocator are next.
+  I/O and the ABI, optimization, diagnostics and tooling. Phases 1–4 are
+  complete. Phase 5 (optimization) is in progress — constant folding,
+  constant-condition elimination and constant operands have landed; dataflow
+  copy propagation and the register allocator are the remainder, and the roadmap
+  says why they are staged last. Phase 6 (diagnostics and tooling) is partly
+  done: caret snippets, the warning channel, the differential harness and the
+  opt/no-opt equivalence check are in; `--interpret` and the random program
+  generator are not. Phase 7 has `--version`, `--sign` and three-target output;
+  floating point and an SSA IR are still open.
