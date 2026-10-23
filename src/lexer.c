@@ -178,6 +178,7 @@ static Token lex_ident_or_keyword(Lexer *lexer)
         {"continue", TOKEN_KEYWORD_CONTINUE},
         {"return", TOKEN_KEYWORD_RETURN},
         {"struct", TOKEN_KEYWORD_STRUCT},
+        {"extern", TOKEN_KEYWORD_EXTERN},
     };
 
     TokenType type = TOKEN_IDENT;
@@ -276,8 +277,6 @@ static int read_escape(Lexer *lexer)
         return '\t';
     case 'r':
         return '\r';
-    case '0':
-        return '\0';
     case 'a':
         return '\a';
     case 'b':
@@ -311,6 +310,21 @@ static int read_escape(Lexer *lexer)
         return value;
     }
     default:
+        /* Octal escapes: one to three digits, e.g. \0 (NUL), \101 ('A'),
+         * \377. `\0` is just the one-digit case, so it needs no separate arm
+         * (BUG-022: this was missing, and only became visible once string
+         * literals were emitted as real data). */
+        if (c >= '0' && c <= '7')
+        {
+            int value = c - '0';
+            int digits = 1;
+            while (digits < 3 && peek(lexer) >= '0' && peek(lexer) <= '7')
+            {
+                value = value * 8 + (advance(lexer) - '0');
+                digits++;
+            }
+            return value;
+        }
         report_error(lexer->line, lexer->col, "unknown escape sequence '\\%c'", c);
         return c;
     }
@@ -357,39 +371,58 @@ static Token lex_char_literal(Lexer *lexer)
     return make_token(TOKEN_CHAR_LIT, xstrdup(text), start_line, start_col);
 }
 
-/* String literals are a later-phase feature. Skip the whole literal -- honouring
- * backslash escapes so that "\"" does not end it early -- and report it, so the
- * rest of the file still lexes and the user sees the other errors too
- * (BUG-013). */
-static void skip_string_literal(Lexer *lexer)
+/* String literals (ROADMAP Phase 4). The decoded bytes live in the token and
+ * are later emitted into .rodata, so `"hello\n"` is a real `char *` a program
+ * can hand to printf.
+ *
+ * Escapes are decoded here, reusing read_escape(), so exactly one function
+ * knows what a backslash means and the assembler only ever sees bytes. Before
+ * this, an unsupported literal was skipped and reported (BUG-013); that
+ * rejection is gone now that strings are supported. */
+static Token lex_string_literal(Lexer *lexer)
 {
     int start_line = lexer->line;
     int start_col = lexer->col;
     advance(lexer); /* opening '"' */
 
+    size_t cap = 32;
+    size_t len = 0;
+    char *buf = xmalloc(cap);
+
     int closed = 0;
     while (!at_end(lexer) && peek(lexer) != '\n')
     {
+        int ch;
         if (peek(lexer) == '"')
         {
             advance(lexer);
             closed = 1;
             break;
         }
-        if (peek(lexer) == '\\' && peek_next(lexer) != '\0')
+        if (peek(lexer) == '\\')
         {
-            advance(lexer); /* the escaped character is data, not a quote */
+            advance(lexer); /* the backslash itself */
+            ch = read_escape(lexer);
         }
-        advance(lexer);
+        else
+        {
+            ch = (unsigned char)advance(lexer);
+        }
+        if (len + 1 >= cap)
+        {
+            cap *= 2;
+            buf = xrealloc(buf, cap);
+        }
+        buf[len++] = (char)ch;
     }
 
     if (!closed)
     {
         report_error(start_line, start_col, "unterminated string literal");
-        return;
     }
-    report_error(start_line, start_col,
-                 "string literals are not supported by mycc");
+
+    buf[len] = '\0';
+    return make_token(TOKEN_STRING, buf, start_line, start_col);
 }
 
 Token lexer_next_token(Lexer *lexer)
@@ -403,11 +436,6 @@ Token lexer_next_token(Lexer *lexer)
         if (at_end(lexer))
         {
             return make_token(TOKEN_EOF, NULL, lexer->line, lexer->col);
-        }
-        if (peek(lexer) == '"')
-        {
-            skip_string_literal(lexer);
-            continue;
         }
         break;
     }
@@ -427,6 +455,10 @@ Token lexer_next_token(Lexer *lexer)
     if (c == '\'')
     {
         return lex_char_literal(lexer);
+    }
+    if (c == '"')
+    {
+        return lex_string_literal(lexer);
     }
 
     advance(lexer);
@@ -602,6 +634,8 @@ const char *token_type_to_string(TokenType type)
         return "integer literal";
     case TOKEN_CHAR_LIT:
         return "character literal";
+    case TOKEN_STRING:
+        return "string literal";
     case TOKEN_IDENT:
         return "identifier";
     case TOKEN_KEYWORD_INT:
@@ -724,6 +758,8 @@ const char *token_type_to_string(TokenType type)
         return "']'";
     case TOKEN_KEYWORD_STRUCT:
         return "'struct'";
+    case TOKEN_KEYWORD_EXTERN:
+        return "'extern'";
     case TOKEN_DOT:
         return "'.'";
     case TOKEN_ARROW:

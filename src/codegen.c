@@ -8,9 +8,6 @@
 
 #define MAX_NEST MYCC_MAX_NEST
 
-static const char *const ARG_REGS[6] = {
-    "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-
 static FILE *out;
 static int label_counter;
 static int pushed_count;   /* number of 8-byte temporaries currently on %rsp */
@@ -35,9 +32,92 @@ static const char *sym_name(const char *name)
     return buf;
 }
 
-/* Break/continue target stacks. Loops push both; a switch pushes only a
- * break target, so 'continue' inside a switch still finds the loop. Each
- * frame remembers the kind of construct so the right label name is used. */
+/* ------------------------------------------------------------------ */
+/* Calling convention (ROADMAP Phase 4)                                */
+/* ------------------------------------------------------------------ */
+
+/* The two 64-bit ABIs this compiler targets disagree about where the first
+ * arguments live, how many of them there are, and whether the caller must
+ * reserve scratch space:
+ *
+ *           1st  2nd  3rd  4th  5th  6th   register args  shadow space
+ *   SysV    rdi  rsi  rdx  rcx  r8   r9    6              none
+ *   Win64   rcx  rdx  r8   r9   stack stack 4             32 bytes
+ *
+ * Everything past the register slots is passed on the stack, in order, which
+ * is what lets mycc call printf and real C libraries at all. On Windows
+ * %rsi/%rdi are callee-saved, so nothing here may clobber them -- and nothing
+ * does, except the struct copy below, which saves and restores them. */
+static int arg_reg_count(void)
+{
+    return target == TARGET_WINDOWS ? 4 : 6;
+}
+
+static const char *arg_reg(int i)
+{
+    static const char *const sysv[] = {"%rdi", "%rsi", "%rdx",
+                                       "%rcx", "%r8",  "%r9"};
+    static const char *const win64[] = {"%rcx", "%rdx", "%r8", "%r9"};
+    return target == TARGET_WINDOWS ? win64[i] : sysv[i];
+}
+
+/* First stack argument's distance from %rbp inside the callee. Layout at the
+ * callee's entry, with R = %rsp before `pushq %rbp`:
+ *
+ *   [R]        return address
+ *   [R+8..40)  Windows: 32-byte home area      (SysV: first stack argument)
+ *   [R+40]     Windows: first stack argument
+ *
+ * After `pushq %rbp; movq %rsp, %rbp` every address above is +8, so the first
+ * stack argument sits at 16(%rbp) on SysV and 48(%rbp) on Windows. */
+static int stack_arg_base(void)
+{
+    return target == TARGET_WINDOWS ? 48 : 16;
+}
+
+/* Names of functions this file defines. A call to one of these is a plain
+ * direct call; anything else is an external library symbol and, on ELF, has
+ * to go through the PLT so it still links when the output is position
+ * independent. */
+#define MAX_DEFINED 256
+static const char *defined_names[MAX_DEFINED];
+static int defined_count;
+
+static int is_defined_here(const char *name)
+{
+    for (int i = 0; i < defined_count; i++)
+    {
+        if (strcmp(defined_names[i], name) == 0)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *call_target(const char *name)
+{
+    static char buf[512];
+    if (target == TARGET_LINUX && !is_defined_here(name))
+    {
+        snprintf(buf, sizeof(buf), "%s@PLT", sym_name(name));
+        return buf;
+    }
+    return sym_name(name);
+}
+
+/* Breakdown used by gen_call: `%rsp` must be 16-byte aligned at the call. */
+typedef struct
+{
+    int stack_args; /* arguments left on the stack, in 8-byte units */
+    int padded;     /* an 8-byte alignment pad was inserted */
+    int shadow;     /* Windows home area units (0 or 4) */
+} CallLayout;
+
+/* ------------------------------------------------------------------ */
+/* Break/continue target stacks                                       */
+/* ------------------------------------------------------------------ */
+
 typedef enum
 {
     CTX_WHILE,
@@ -45,6 +125,10 @@ typedef enum
     CTX_FOR,
     CTX_SWITCH
 } CtxKind;
+
+/* Break/continue target stacks. Loops push both; a switch pushes only a
+ * break target, so 'continue' inside a switch still finds the loop. Each
+ * frame remembers the kind of construct so the right label name is used. */
 
 static CtxKind break_kind[MAX_NEST];
 static int break_id[MAX_NEST];
@@ -124,6 +208,112 @@ static void emit_line(const char *fmt, ...)
     vfprintf(out, fmt, ap);
     va_end(ap);
     fputc('\n', out);
+}
+
+/* ------------------------------------------------------------------ */
+/* String pool (ROADMAP Phase 4)                                       */
+/* ------------------------------------------------------------------ */
+
+/* String literals become .rodata entries. Codegen discovers them while walking
+ * expressions, so their contents are collected here and the whole section is
+ * emitted once at the end of the file. */
+static char **str_pool;
+static int str_count;
+static int str_cap;
+
+static int intern_string(const char *text)
+{
+    /* Identical literals share one entry: repeated format strings then cost
+     * one rodata line, not one per use. */
+    for (int i = 0; i < str_count; i++)
+    {
+        if (strcmp(str_pool[i], text) == 0)
+        {
+            return i;
+        }
+    }
+    if (str_count == str_cap)
+    {
+        str_cap = str_cap ? str_cap * 2 : 16;
+        str_pool = xrealloc(str_pool, (size_t)str_cap * sizeof(*str_pool));
+    }
+    str_pool[str_count] = xstrdup(text);
+    return str_count++;
+}
+
+/* Escape a byte string for the assembler's .string pseudo-op. Non-printable
+ * bytes become three-digit octal, so no byte can terminate the literal or
+ * confuse the assembler. */
+static void emit_string_data(const char *s)
+{
+    size_t n = strlen(s);
+    char *buf = xmalloc(n * 4 + 1);
+    size_t w = 0;
+    for (size_t i = 0; i < n; i++)
+    {
+        unsigned char c = (unsigned char)s[i];
+        switch (c)
+        {
+        case '\\':
+            buf[w++] = '\\';
+            buf[w++] = '\\';
+            break;
+        case '"':
+            buf[w++] = '\\';
+            buf[w++] = '"';
+            break;
+        case '\n':
+            buf[w++] = '\\';
+            buf[w++] = 'n';
+            break;
+        case '\t':
+            buf[w++] = '\\';
+            buf[w++] = 't';
+            break;
+        case '\r':
+            buf[w++] = '\\';
+            buf[w++] = 'r';
+            break;
+        default:
+            if (c < 0x20 || c >= 0x7f)
+            {
+                w += (size_t)snprintf(buf + w, 5, "\\%03o", c);
+            }
+            else
+            {
+                buf[w++] = (char)c;
+            }
+            break;
+        }
+    }
+    buf[w] = '\0';
+    emit_line("\t.string \"%s\"", buf);
+    free(buf);
+}
+
+static void gen_strings(void)
+{
+    if (str_count == 0)
+    {
+        return;
+    }
+    /* COFF and ELF both understand `.rodata`. Mach-O does not: it wants an
+     * explicit segment,section pair, and string literals belong in the
+     * cstring section, which the linker coalesces across object files. */
+    if (target == TARGET_DARWIN)
+    {
+        emit_line(".section __TEXT,__cstring,cstring_literals");
+    }
+    else
+    {
+        emit_line(".section .rodata");
+    }
+    for (int i = 0; i < str_count; i++)
+    {
+        emit_line(".L.str.%d:", i);
+        emit_string_data(str_pool[i]);
+    }
+    emit_line(".text");
 }
 
 /* ------------------------------------------------------------------ */
@@ -403,6 +593,20 @@ static void gen_assign(ASTNode *node)
         node->left->val_type->kind == TYPE_STRUCT)
     {
         int size = node->left->val_type->size;
+
+        /* Windows keeps %rsi/%rdi across calls, so a struct copy must preserve
+         * them for the function's caller. Save them *first*, before they are
+         * loaded with the copy addresses; two 8-byte pushes keep the stack
+         * alignment unchanged. */
+        int saved = 0;
+        if (target == TARGET_WINDOWS)
+        {
+            emit_line("\tpushq %%rdi");
+            emit_line("\tpushq %%rsi");
+            pushed_count += 2;
+            saved = 1;
+        }
+
         gen_addr(node->left);
         emit_line("\tpushq %%rax"); /* destination; also the result value */
         pushed_count++;
@@ -425,6 +629,12 @@ static void gen_assign(ASTNode *node)
         emit_line("\trep movsb");
         emit_line("\tpopq %%rax");
         pushed_count--;
+        if (saved)
+        {
+            emit_line("\tpopq %%rsi");
+            emit_line("\tpopq %%rdi");
+            pushed_count -= 2;
+        }
         return;
     }
 
@@ -549,24 +759,28 @@ static void gen_ternary(ASTNode *node)
 
 static void gen_call(ASTNode *node)
 {
-    ASTNode *args[6];
+    ASTNode *args[32];
     int n = 0;
-    for (ASTNode *a = node->args; a != NULL && n < 6; a = a->next)
+    for (ASTNode *a = node->args; a != NULL && n < 32; a = a->next)
     {
         args[n++] = a;
     }
 
-    /* Keep %rsp 16-byte aligned at the point of the call (System V ABI).
-     * pushed_count tracks 8-byte units currently on the stack, so it must
-     * be even at the call instruction. Pad BEFORE evaluating the arguments:
-     * the pad then sits below the pushed args and is never popped as an arg.
-     * Tracking the pad in pushed_count keeps nested calls aligned too. */
-    int padded = 0;
-    if ((pushed_count & 1) != 0)
+    int nreg = arg_reg_count();
+    CallLayout lay;
+    lay.stack_args = n > nreg ? n - nreg : 0;
+    lay.shadow = (target == TARGET_WINDOWS) ? 4 : 0; /* 32 bytes, in units */
+    lay.padded = 0;
+
+    /* %rsp must be 16-byte aligned at the call. Everything that will still
+     * be on the stack at that moment counts: the arguments that do not fit in
+     * registers plus the Windows home area. The pad goes in first so it ends
+     * up below the stack arguments and is never mistaken for one. */
+    if ((pushed_count + lay.stack_args + lay.shadow) & 1)
     {
         emit_line("\tsubq $8, %%rsp");
         pushed_count++;
-        padded = 1;
+        lay.padded = 1;
     }
 
     /* Evaluate arguments right-to-left so that nested calls do not clobber
@@ -578,17 +792,39 @@ static void gen_call(ASTNode *node)
         pushed_count++;
     }
 
-    for (int i = 0; i < n; i++)
+    /* Pop the first nreg values into their registers. What remains on the
+     * stack is already in the order the callee expects: args[nreg] nearest
+     * to %rsp, then args[nreg+1], and so on. */
+    int moved = n < nreg ? n : nreg;
+    for (int i = 0; i < moved; i++)
     {
-        emit_line("\tpopq %s", ARG_REGS[i]);
+        emit_line("\tpopq %s", arg_reg(i));
         pushed_count--;
     }
-    emit_line("\tcall %s", sym_name(node->name));
 
-    if (padded)
+    /* Windows: 32 bytes of home space, immediately below the stack arguments
+     * and therefore just above the return address at the callee. */
+    if (lay.shadow)
     {
-        emit_line("\taddq $8, %%rsp");
-        pushed_count--;
+        emit_line("\tsubq $32, %%rsp");
+        pushed_count += lay.shadow;
+    }
+
+    /* System V uses %al to carry the number of vector registers used by a
+     * variadic call; printf reads it. Zero is correct for every call mycc
+     * makes, and non-variadic callees ignore it. */
+    if (target != TARGET_WINDOWS && target != TARGET_DARWIN)
+    {
+        emit_line("\tmovb $0, %%al");
+    }
+
+    emit_line("\tcall %s", call_target(node->name));
+
+    int cleanup = lay.stack_args + lay.shadow + (lay.padded ? 1 : 0);
+    if (cleanup > 0)
+    {
+        emit_line("\taddq $%d, %%rsp", cleanup * 8);
+        pushed_count -= cleanup;
     }
 }
 
@@ -633,6 +869,14 @@ static void gen_expr(ASTNode *node)
     case AST_INT_LIT:
         emit_line("\tmovq $%lld, %%rax", node->value);
         break;
+    case AST_STRING:
+    {
+        /* The value of a string literal is the address of its first byte. */
+        int idx = intern_string(node->name != NULL ? node->name : "");
+        node->value = idx;
+        emit_line("\tleaq .L.str.%d(%%rip), %%rax", idx);
+        break;
+    }
     case AST_VAR_REF:
         if (node->vtype == TYPE_ARRAY)
         {
@@ -965,11 +1209,24 @@ static void gen_func(ASTNode *fn)
         emit_line("\tsubq $%d, %%rsp", aligned_frame);
     }
 
-    /* Copy incoming argument registers into their stack slots. */
+    /* Copy incoming arguments into their stack slots. The first
+     * arg_reg_count() arrive in registers; anything beyond that was passed on
+     * the stack by the caller and sits above the return address (and, on
+     * Windows, above the 32-byte home area). */
     int i = 0;
-    for (ASTNode *p = fn->left; p != NULL && i < 6; p = p->next, i++)
+    int nreg = arg_reg_count();
+    for (ASTNode *p = fn->left; p != NULL; p = p->next, i++)
     {
-        emit_line("\tmovq %s, %d(%%rbp)", ARG_REGS[i], p->stack_offset);
+        if (i < nreg)
+        {
+            emit_line("\tmovq %s, %d(%%rbp)", arg_reg(i), p->stack_offset);
+        }
+        else
+        {
+            emit_line("\tmovq %d(%%rbp), %%rax",
+                      stack_arg_base() + 8 * (i - nreg));
+            emit_line("\tmovq %%rax, %d(%%rbp)", p->stack_offset);
+        }
     }
 
     if (!gen_stmt(fn->body))
@@ -1037,6 +1294,9 @@ static void gen_program(ASTNode *prog)
             gen_func(d);
         }
     }
+    /* String literals are discovered while generating functions, so the
+     * .rodata section goes out last. */
+    gen_strings();
     /* ELF-only: marks the stack as non-executable on Linux. GNU as on
      * Windows (COFF/PE) does not understand this directive, and Mach-O uses
      * its own section naming, so skip it for both. */
@@ -1060,6 +1320,21 @@ int codegen_generate(ASTNode *root, FILE *output, TargetKind target_kind)
     continue_sp = 0;
     switch_sp = 0;
     target = target_kind;
+
+    /* Remember which functions this file defines: a call to one of them is a
+     * direct call, while everything else is an external symbol that has to go
+     * through the PLT on ELF. */
+    str_count = 0;
+    defined_count = 0;
+    for (ASTNode *d = root->body; d != NULL; d = d->next)
+    {
+        if (d->type == AST_FUNC_DECL && d->body != NULL &&
+            defined_count < MAX_DEFINED)
+        {
+            defined_names[defined_count++] = d->name;
+        }
+    }
+
     gen_program(root);
     return error_count() > 0 ? 1 : 0;
 }

@@ -49,6 +49,7 @@ test: $(TARGET)
 			echo "SKIP: $$t (no EXPECT marker)"; continue; \
 		fi; \
 		warn=$$(sed -n 's/.*WARN:[[:space:]]*//p' "$$t" | tr -d '\r' | head -n1); \
+		wantout=$$(sed -n 's/.*EXPECT-OUT:[[:space:]]*//p' "$$t" | tr -d '\r' | head -n1); \
 		base=$$(basename "$$t" .c); \
 		./$(TARGET) $(TARGETFLAG) "$$t" -o "$(TESTDIR)/$$base.s" \
 			>"$(TESTDIR)/$$base.out" 2>&1 \
@@ -58,9 +59,12 @@ test: $(TARGET)
 		fi; \
 		$(CC) $(LDFLAGS) -o "$(TESTDIR)/$$base" "$(TESTDIR)/$$base.s" \
 			|| { echo "FAIL: assemble $$t"; exit 1; }; \
-		"$(TESTDIR)/$$base"; actual=$$?; \
+		"$(TESTDIR)/$$base" > "$(TESTDIR)/$$base.stdout" 2>&1; actual=$$?; \
 		if [ "$$actual" != "$$expected" ]; then \
 			echo "FAIL: $$t expected exit $$expected, got $$actual"; exit 1; \
+		fi; \
+		if [ -n "$$wantout" ] && ! grep -qF "$$wantout" "$(TESTDIR)/$$base.stdout"; then \
+			echo "FAIL: $$t missing output: $$wantout"; exit 1; \
 		fi; \
 		echo "PASS: $$t (exit $$actual)"; \
 	done

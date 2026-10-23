@@ -44,7 +44,8 @@ static ASTNode *parse_jump(const char *keyword);
 static ASTNode *parse_return(void);
 static ASTNode *parse_expr_stmt(void);
 static ASTNode *parse_var_decl(Type *base_type);
-static ASTNode *parse_function_after_name(char *name, Type *ret, int line, int col);
+static ASTNode *parse_function_after_name(char *name, Type *ret, int line,
+                                          int col, int is_extern);
 
 /* ------------------------------------------------------------------ */
 /* Nesting guard                                                       */
@@ -73,17 +74,6 @@ static int parse_depth_enter(int line, int col)
     }
     parse_depth++;
     return 1;
-}
-
-static ASTNode *ast_node(ASTNodeType type, int line, int col)
-{
-    ASTNode *node = xcalloc(1, sizeof(ASTNode));
-    node->type = type;
-    node->line = line;
-    node->col = col;
-    node->vtype = TYPE_INT;
-    node->val_type = type_int();
-    return node;
 }
 
 static void parser_advance(void)
@@ -913,6 +903,18 @@ static ASTNode *parse_primary(void)
         node->value = value;
         parser_advance();
     }
+    else if (parser.current.type == TOKEN_STRING)
+    {
+        /* A string literal is an expression of type `char *` whose bytes are
+         * emitted into .rodata (ROADMAP Phase 4). The decoded content is kept
+         * on the node; codegen assigns it a pool label. */
+        int line = parser.current.line;
+        int col = parser.current.col;
+        node = ast_node(AST_STRING, line, col);
+        node->name = xstrdup(parser.current.value);
+        node->value = -1; /* pool index, filled in by codegen */
+        parser_advance();
+    }
     else if (parser.current.type == TOKEN_IDENT)
     {
         int line = parser.current.line;
@@ -1733,12 +1735,14 @@ static int parse_param_list(ASTNode *fn)
     return parser_expect(TOKEN_RPAREN, "expected ')' after parameters");
 }
 
-static ASTNode *parse_function_after_name(char *name, Type *ret, int line, int col)
+static ASTNode *parse_function_after_name(char *name, Type *ret, int line,
+                                          int col, int is_extern)
 {
     ASTNode *fn = ast_node(AST_FUNC_DECL, line, col);
     fn->name = name;
     fn->vtype = ret->kind;
     fn->val_type = ret;
+    fn->is_extern = 0;
 
     if (!parser_expect(TOKEN_LPAREN, "expected '(' after function name"))
     {
@@ -1753,6 +1757,9 @@ static ASTNode *parse_function_after_name(char *name, Type *ret, int line, int c
     if (parser_match(TOKEN_SEMICOLON))
     {
         fn->body = NULL; /* Prototype has no body */
+        /* `extern` only means something without a body: with one, this is an
+         * ordinary definition and the linker needs nothing from elsewhere. */
+        fn->is_extern = is_extern;
         return fn;
     }
 
@@ -1848,6 +1855,15 @@ ASTNode *parse_program(Lexer *lexer)
     ASTNode **tail = &prog->body;
     while (parser.current.type != TOKEN_EOF)
     {
+        /* `extern` marks a declaration of something the linker supplies
+         * (printf, putchar, ...). It is accepted only at file scope, and only
+         * on a function declaration is it meaningful to this compiler. */
+        int is_extern = 0;
+        if (parser.current.type == TOKEN_KEYWORD_EXTERN)
+        {
+            is_extern = 1;
+            parser_advance();
+        }
         if (!is_type_start(parser.current.type))
         {
             report_error(parser.current.line, parser.current.col,
@@ -1904,12 +1920,13 @@ ASTNode *parse_program(Lexer *lexer)
                 report_error(line, col,
                              "function return type 'struct' is not supported");
             }
-            decl = parse_function_after_name(name, type, line, col);
+            decl = parse_function_after_name(name, type, line, col, is_extern);
             if (decl == NULL)
             {
                 free(name);
                 return NULL;
             }
+            decl->is_extern = is_extern;
         }
         else
         {

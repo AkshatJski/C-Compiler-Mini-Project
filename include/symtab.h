@@ -12,6 +12,15 @@ typedef struct Symbol
     int is_global;
     int is_function;
     int is_defined;
+    /* Functions only: declared `extern`, so the definition comes from a
+     * library at link time. Exempt from the declared-but-never-defined check
+     * (BUG-015) and from exact arity checking (a variadic extern such as
+     * printf takes more arguments than it declares). */
+    int is_extern;
+    /* Set only for the compiler's own built-in I/O helpers (print_int and
+     * friends), never for a user-declared function of the same name. It marks
+     * the calls that semantic analysis rewrites into libc calls. */
+    int is_builtin;
     int param_count;
     /* Functions only: the AST_PARAM chain from the declaration, so call sites
      * can be checked against the parameter types (BUG-019). Points into the

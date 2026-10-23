@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "semantic.h"
@@ -315,13 +316,9 @@ static void sem_decl_pass(ASTNode *prog)
             Symbol *existing = symbol_lookup_current(d->name);
             int params = count_params(d);
 
-            if (params > 6)
-            {
-                report_error(d->line, d->col,
-                             "function '%s' has %d parameters; the AMD64 "
-                             "register limit is 6",
-                             d->name, params);
-            }
+            /* Parameter count is no longer capped: arguments beyond the
+             * register slots are passed on the stack by the caller and read
+             * from above the frame by the callee (ROADMAP Phase 4). */
 
             /* `main` is special: the C runtime passes argc/argv in registers
              * chosen by the platform ABI. mycc reads parameters from the SysV
@@ -387,6 +384,12 @@ static void sem_decl_pass(ASTNode *prog)
                 {
                     existing->param_list = d->left;
                 }
+                /* A later `extern` re-declaration of an already-defined
+                 * function must not make it look externally supplied. */
+                if (existing->is_defined)
+                {
+                    existing->is_extern = 0;
+                }
             }
             else
             {
@@ -395,6 +398,7 @@ static void sem_decl_pass(ASTNode *prog)
                 sym->param_count = params;
                 sym->param_list = d->left;
                 sym->is_defined = (d->body != NULL) ? 1 : 0;
+                sym->is_extern = (d->body == NULL && d->is_extern) ? 1 : 0;
             }
         }
         else if (d->type == AST_VAR_DECL)
@@ -456,6 +460,63 @@ static Symbol *resolve_var(ASTNode *node)
     return sym;
 }
 
+/* ------------------------------------------------------------------ */
+/* Built-in I/O lowering                                               */
+/* ------------------------------------------------------------------ */
+
+static ASTNode *make_string_node(const char *text)
+{
+    ASTNode *s = ast_node(AST_STRING, 0, 0);
+    s->name = xstrdup(text);
+    s->value = -1;
+    s->vtype = TYPE_PTR;
+    s->val_type = type_ptr(type_char());
+    return s;
+}
+
+static ASTNode *make_int_node(long long value)
+{
+    ASTNode *n = ast_node(AST_INT_LIT, 0, 0);
+    n->value = value;
+    n->vtype = TYPE_INT;
+    n->val_type = type_int();
+    return n;
+}
+
+/* print_int(x)   -> printf("%lld\n", x)   (mycc's int is 64-bit)
+ * print_str(s)   -> printf("%s", s)
+ * print_char(x)  -> putchar(x)
+ * print_endl()   -> putchar('\n')
+ *
+ * The extra argument is prepended as an ordinary AST node, so the regular
+ * call path generates it and the platform ABI carries it. */
+static void rewrite_builtin_call(ASTNode *call)
+{
+    if (strcmp(call->name, "print_int") == 0)
+    {
+        ASTNode *fmt = make_string_node("%lld\n");
+        fmt->next = call->args;
+        call->args = fmt;
+        call->name = "printf";
+    }
+    else if (strcmp(call->name, "print_str") == 0)
+    {
+        ASTNode *fmt = make_string_node("%s");
+        fmt->next = call->args;
+        call->args = fmt;
+        call->name = "printf";
+    }
+    else if (strcmp(call->name, "print_char") == 0)
+    {
+        call->name = "putchar";
+    }
+    else if (strcmp(call->name, "print_endl") == 0)
+    {
+        call->args = make_int_node('\n');
+        call->name = "putchar";
+    }
+}
+
 static void check_call(ASTNode *call)
 {
     Symbol *sym = symbol_lookup(call->name);
@@ -480,7 +541,19 @@ static void check_call(ASTNode *call)
     }
 
     int argc = count_args(call);
-    if (argc != sym->param_count)
+    if (sym->is_extern)
+    {
+        /* A variadic extern (`printf`) legitimately takes more arguments than
+         * its declaration names; only the declared prefix is type-checked
+         * below, and the count must be at least that prefix. */
+        if (argc < sym->param_count)
+        {
+            report_error(call->line, call->col,
+                         "function '%s' expects at least %d argument(s), got %d",
+                         call->name, sym->param_count, argc);
+        }
+    }
+    else if (argc != sym->param_count)
     {
         report_error(call->line, call->col,
                      "function '%s' expects %d argument(s), got %d",
@@ -507,6 +580,14 @@ static void check_call(ASTNode *call)
             param = param->next;
         }
     }
+
+    /* A built-in I/O helper becomes the libc call that implements it. Doing
+     * this after the checks means the helper's own signature is what the user
+     * sees in diagnostics, and codegen needs no knowledge of the names. */
+    if (sym->is_builtin)
+    {
+        rewrite_builtin_call(call);
+    }
 }
 
 static void check_value(ASTNode *expr)
@@ -531,6 +612,11 @@ static void check_expr(ASTNode *expr)
     case AST_INT_LIT:
         expr->vtype = TYPE_INT;
         expr->val_type = type_int();
+        break;
+    case AST_STRING:
+        /* A string literal denotes its first byte, i.e. `char *`. */
+        expr->vtype = TYPE_PTR;
+        expr->val_type = type_ptr(type_char());
         break;
     case AST_VAR_REF:
         resolve_var(expr);
@@ -1258,6 +1344,68 @@ static void check_returns(ASTNode *fn, ASTNode *stmt)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Built-in I/O (ROADMAP Phase 4)                                      */
+/* ------------------------------------------------------------------ */
+
+/* Four printing helpers are available without any declaration:
+ *
+ *   print_int(expr)   decimal 64-bit integer, then a newline
+ *   print_char(expr)  one character
+ *   print_str(expr)   a `char *` string, no newline
+ *   print_endl()      one newline
+ *
+ * They are registered as extern symbols, so a call type-checks like any other
+ * function (arity and the declared parameter types). Codegen lowers them to
+ * libc calls -- printf with "%lld"/"%s", and putchar -- using the platform
+ * calling convention. A program that defines one of these names itself keeps
+ * its own definition: sem_decl_pass has already inserted it, and codegen only
+ * lowers the builtin when no body exists. */
+static void register_builtin(const char *name, Type *ret, Type *arg, int argc)
+{
+    if (symbol_lookup(name) != NULL)
+    {
+        return; /* the program declared its own -- that one wins */
+    }
+    Symbol *sym = symbol_insert(name, ret, 1);
+    sym->is_function = 1;
+    sym->is_defined = 1; /* nothing to link: codegen emits the calls */
+    sym->is_extern = 1;  /* variadic-friendly arity rule */
+    sym->is_builtin = 1;
+    sym->param_count = argc;
+
+    ASTNode *first = NULL;
+    ASTNode **tail = &first;
+    for (int i = 0; i < argc; i++)
+    {
+        ASTNode *p = ast_node(AST_PARAM, 0, 0);
+        char buf[16];
+        snprintf(buf, sizeof(buf), "arg%d", i);
+        p->name = xstrdup(buf);
+        p->val_type = arg;
+        p->vtype = arg->kind;
+        *tail = p;
+        tail = &p->next;
+    }
+    sym->param_list = first;
+}
+
+static void register_builtins(void)
+{
+    Type *int_type = type_int();
+    /* Source-level helpers: these are rewritten into libc calls. */
+    register_builtin("print_int", int_type, int_type, 1);
+    register_builtin("print_char", int_type, int_type, 1);
+    register_builtin("print_str", int_type, type_ptr(type_char()), 1);
+    register_builtin("print_endl", int_type, NULL, 0);
+    /* The two libc functions the rewrites target, and the ones a program is
+     * most likely to call directly. Declaring them here means no `extern`
+     * line is needed for the common case. */
+    register_builtin("printf", int_type, type_ptr(type_char()), 1);
+    register_builtin("puts", int_type, type_ptr(type_char()), 1);
+    register_builtin("putchar", int_type, int_type, 1);
+}
+
 int semantic_analyze(ASTNode *root)
 {
     if (root == NULL || root->type != AST_PROGRAM)
@@ -1267,6 +1415,7 @@ int semantic_analyze(ASTNode *root)
     }
     symtab_init();
     sem_decl_pass(root);
+    register_builtins();
     int have_main = 0;
     for (ASTNode *d = root->body; d != NULL; d = d->next)
     {
@@ -1300,7 +1449,7 @@ int semantic_analyze(ASTNode *root)
         }
         Symbol *sym = symbol_lookup(d->name);
         if (sym != NULL && sym->is_function && sym->is_called &&
-            !sym->is_defined)
+            !sym->is_defined && !sym->is_extern)
         {
             report_error(sym->call_line, sym->call_col,
                          "function '%s' is declared but never defined", d->name);

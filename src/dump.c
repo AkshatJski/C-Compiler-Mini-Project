@@ -7,6 +7,45 @@
 /* Token dump                                                          */
 /* ------------------------------------------------------------------ */
 
+/* Print a token's decoded text with its control characters escaped. Without
+ * this, a string literal containing a newline would split the dump across two
+ * lines and look like a corrupted token stream. */
+static void print_escaped(FILE *out, const char *s)
+{
+    for (const char *p = s; *p != '\0'; p++)
+    {
+        unsigned char c = (unsigned char)*p;
+        switch (c)
+        {
+        case '\n':
+            fputs("\\n", out);
+            break;
+        case '\t':
+            fputs("\\t", out);
+            break;
+        case '\r':
+            fputs("\\r", out);
+            break;
+        case '\\':
+            fputs("\\\\", out);
+            break;
+        case '"':
+            fputs("\\\"", out);
+            break;
+        default:
+            if (c < 0x20 || c >= 0x7f)
+            {
+                fprintf(out, "\\%03o", c);
+            }
+            else
+            {
+                fputc(c, out);
+            }
+            break;
+        }
+    }
+}
+
 void dump_tokens(Lexer *lexer, FILE *out)
 {
     int index = 0;
@@ -17,7 +56,9 @@ void dump_tokens(Lexer *lexer, FILE *out)
                 token_type_to_string(tok.type));
         if (tok.value != NULL)
         {
-            fprintf(out, "  '%s'", tok.value);
+            fputs("  '", out);
+            print_escaped(out, tok.value);
+            fputc('\'', out);
         }
         fprintf(out, "\n");
         int done = tok.type == TOKEN_EOF;
@@ -208,6 +249,11 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_INT_LIT:
         fprintf(out, "INT %lld", node->value);
         break;
+    case AST_STRING:
+        fputs("STRING \"", out);
+        print_escaped(out, node->name != NULL ? node->name : "");
+        fputc('"', out);
+        break;
     case AST_CALL:
         fprintf(out, "CALL %s", node->name);
         break;
@@ -298,6 +344,7 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         break;
     case AST_VAR_REF:
     case AST_INT_LIT:
+    case AST_STRING:
         break;
     }
 }

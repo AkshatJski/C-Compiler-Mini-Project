@@ -9,6 +9,17 @@ static int g_warning_count = 0;
 static int g_warnings_enabled = 1;
 static const char *g_source_path = NULL;
 
+ASTNode *ast_node(ASTNodeType type, int line, int col)
+{
+    ASTNode *node = xcalloc(1, sizeof(ASTNode));
+    node->type = type;
+    node->line = line;
+    node->col = col;
+    node->vtype = TYPE_INT;
+    node->val_type = type_int();
+    return node;
+}
+
 void set_source_path(const char *path)
 {
     g_source_path = path;

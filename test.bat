@@ -86,11 +86,34 @@ if errorlevel 1 (
     goto :eof
 )
 
-"build\%~n1.exe"
+rem Optional `// EXPECT-OUT: <text>` marker: the program must print that text
+rem (ROADMAP Phase 4). Matched as a substring so tests stay readable.
+set "WANTOUT="
+for /f "tokens=1,* delims=:" %%a in ('findstr /c:"EXPECT-OUT:" "%T%"') do (
+    if not defined WANTOUT set "WANTOUT=%%b"
+    goto :positive_out_trim
+)
+:positive_out_trim
+if "!WANTOUT:~0,1!"==" " (
+    set "WANTOUT=!WANTOUT:~1!"
+    goto :positive_out_trim
+)
+
+"build\%~n1.exe" > "build\%~n1.stdout" 2>&1
 set "ACTUAL=!errorlevel!"
+if defined WANTOUT (
+    findstr /c:"!WANTOUT!" "build\%~n1.stdout" >nul 2>&1
+    if errorlevel 1 (
+        echo FAIL: %T% missing output "!WANTOUT!"
+        set FAILED=1
+        goto :eof
+    )
+)
 if not "!ACTUAL!"=="%EXPECTED%" (
     echo FAIL: %T% expected exit %EXPECTED%, got !ACTUAL!
     set FAILED=1
+) else if defined WANTOUT (
+    echo PASS: %T% ^(exit !ACTUAL!, printed "!WANTOUT!"^)
 ) else (
     echo PASS: %T% ^(exit !ACTUAL!^)
 )
