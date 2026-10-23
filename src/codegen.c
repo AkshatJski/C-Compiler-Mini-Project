@@ -200,6 +200,7 @@ static void gen_addr(ASTNode *node);
 static int gen_stmt(ASTNode *node);
 static int gen_stmt_one(ASTNode *node);
 static void emit_binop(BinaryOp op, int uns);
+static int gen_binary_imm(ASTNode *node);
 
 static void emit_line(const char *fmt, ...)
 {
@@ -448,6 +449,14 @@ static void gen_binary(ASTNode *node)
         return;
     }
 
+    /* Phase 5: a literal right operand never needs a register of its own.
+     * Tried before the generic path so the common `x + 1`, `i < 10`, `a * 2`
+     * shapes skip the push/pop entirely. */
+    if (gen_binary_imm(node))
+    {
+        return;
+    }
+
     gen_expr(node->left);
     emit_line("\tpushq %%rax");
     pushed_count++;
@@ -565,6 +574,128 @@ static void emit_binop(BinaryOp op, int uns)
         emit_line("\tmovzbq %%al, %%rax");
         break;
     }
+}
+
+/* Phase 5: emit a binary operation whose right operand is a literal without
+ * giving that literal a register.
+ *
+ * The generic path materialises both operands and combines them:
+ *     pushq left / movq $1,%rax / popq %rcx / addq %rcx,%rax     (4 instrs)
+ * but a literal has no address, no side effects and no lifetime, so it can
+ * live inside the instruction:
+ *     addq $1, %rax                                              (1 instr)
+ * The left operand still goes through gen_expr(), so evaluation order is
+ * unchanged -- skipping the right one is safe precisely because a literal
+ * cannot have an effect.
+ *
+ * Returns 1 when it emitted the operation and 0 to fall back to the general
+ * two-register path. Falls back whenever the immediate would not encode
+ * (x86-64 immediates are sign-extended 32-bit) or would need care the plain
+ * instruction cannot give: division, modulo, and the short-circuit operators
+ * keep the general path, because `/0` must still trap and `&&` must still
+ * skip its right operand. */
+static int gen_binary_imm(ASTNode *node)
+{
+    if (!g_optimize || node->right == NULL)
+    {
+        return 0;
+    }
+    if (node->right->type != AST_INT_LIT)
+    {
+        return 0;
+    }
+
+    long long v = node->right->value;
+    int uns = binary_is_unsigned(node->left->val_type, node->right->val_type);
+
+    switch (node->op)
+    {
+    case OP_DIV:  /* `/` by a constant still has to trap on zero, and the
+                   * cqto/idivq dance is not worth special-casing. */
+    case OP_MOD:
+    case OP_AND:  /* handled (with short-circuit) before this is reached */
+    case OP_OR:
+    case OP_COMMA:
+        return 0;
+    case OP_SHL:
+    case OP_SHR:
+        /* The shift count is an 8-bit immediate and C leaves counts outside
+         * 0..63 undefined, so anything else keeps the general path. */
+        if (v < 0 || v > 63)
+        {
+            return 0;
+        }
+        break;
+    default:
+        if (v < -2147483648LL || v > 2147483647LL)
+        {
+            return 0;
+        }
+        break;
+    }
+
+    gen_expr(node->left); /* %rax = left operand */
+
+    switch (node->op)
+    {
+    case OP_ADD:
+        emit_line("\taddq $%lld, %%rax", v);
+        break;
+    case OP_SUB:
+        emit_line("\tsubq $%lld, %%rax", v);
+        break;
+    case OP_MUL:
+        emit_line("\timulq $%lld, %%rax, %%rax", v);
+        break;
+    case OP_BIT_AND:
+        emit_line("\tandq $%lld, %%rax", v);
+        break;
+    case OP_BIT_OR:
+        emit_line("\torq $%lld, %%rax", v);
+        break;
+    case OP_BIT_XOR:
+        emit_line("\txorq $%lld, %%rax", v);
+        break;
+    case OP_SHL:
+        emit_line("\tshlq $%lld, %%rax", v);
+        break;
+    case OP_SHR:
+        emit_line(uns ? "\tshrq $%lld, %%rax" : "\tsarq $%lld, %%rax", v);
+        break;
+    case OP_EQ:
+        emit_line("\tcmpq $%lld, %%rax", v);
+        emit_line("\tsete %%al");
+        emit_line("\tmovzbq %%al, %%rax");
+        break;
+    case OP_NE:
+        emit_line("\tcmpq $%lld, %%rax", v);
+        emit_line("\tsetne %%al");
+        emit_line("\tmovzbq %%al, %%rax");
+        break;
+    case OP_LT:
+        emit_line("\tcmpq $%lld, %%rax", v);
+        emit_line(uns ? "\tsetb %%al" : "\tsetl %%al");
+        emit_line("\tmovzbq %%al, %%rax");
+        break;
+    case OP_LE:
+        emit_line("\tcmpq $%lld, %%rax", v);
+        emit_line(uns ? "\tsetbe %%al" : "\tsetle %%al");
+        emit_line("\tmovzbq %%al, %%rax");
+        break;
+    case OP_GT:
+        emit_line("\tcmpq $%lld, %%rax", v);
+        emit_line(uns ? "\tseta %%al" : "\tsetg %%al");
+        emit_line("\tmovzbq %%al, %%rax");
+        break;
+    case OP_GE:
+        emit_line("\tcmpq $%lld, %%rax", v);
+        emit_line(uns ? "\tsetae %%al" : "\tsetge %%al");
+        emit_line("\tmovzbq %%al, %%rax");
+        break;
+    default:
+        return 0;
+    }
+    return 1;
 }
 
 /* Emits a store of %rax through `addr_reg`, using the width of `t`. */
