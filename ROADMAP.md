@@ -6,10 +6,10 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 - **[ ]** not started · **[~]** in progress · **[x]** done
 
 > **Status:** Phases 0, 1 (except the `int` width decision and multi-error
-> recovery), Phase 2, and Phase 3 are complete. The suite now has 25 positive
-> tests and 41 error/diagnostic tests (68 checks), and every job also runs a
-> differential test that requires mycc and gcc to return the same exit code
-> (`make difftest` / `difftest.bat`).
+> recovery), 2, 3, 4 and 6 are complete; Phase 5 is in progress. The suite now
+> has 32 positive tests and 41 error/diagnostic tests (75 checks), and every
+> job also runs a differential test that requires mycc and gcc to return the
+> same exit code (`make difftest` / `difftest.bat`).
 >
 > **Correctness sweep (2026-10-23):** a full source review plus ~30 adversarial
 > probes against gcc turned up 21 defects, all of which are now fixed or (one)
@@ -18,11 +18,12 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 > gone: `a[i++] += 5` and `a[i++]++` evaluate their lvalue once, `b = a` copies
 > a whole struct, struct-by-value is rejected instead of miscompiled,
 > `a[i] += 1` no longer double-scales the index, and assignments/calls are
-> type-checked.
+> type-checked. Phase 4 added two more (BUG-022, BUG-023), both fixed with
+> fails-before evidence.
 >
 > **Tooling added:** a macOS CI job, a differential test against the host
-> compiler, warnings with a `-w` switch, `--target=darwin`, and crash-proof
-> nesting limits.
+> compiler, warnings with a `-w` switch, `--target=darwin`, `--no-opt`, and
+> crash-proof nesting limits.
 
 ---
 
@@ -38,8 +39,10 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
       silently-wrong-code bugs pass a green 48-test suite
 - [x] `make clean` also removes the stale `src/*.o` objects; objects now build
       into a `build/` dir so the source tree stays clean
-- [ ] Decide and document the official calling-convention posture
-      (see Phase 4)
+- [x] Decide and document the official calling-convention posture
+      (see Phase 4) — **done**: option B, the real platform ABI on every
+      target. The reasoning and the tradeoffs are in `decision.md`
+      (2026-10-23 14:39)
 
 **Acceptance:** fresh clone → `build.bat`/`make` → `test.bat`/`make test` green
 on all three platforms automatically in CI, with the differential test agreeing.
@@ -190,9 +193,18 @@ Linux; `tests/diff/02_stack_args.c` cross-checks stack arguments against gcc.
 
 ## Phase 5 — Optimization (beyond the "no optimizer" claim)
 
-- [ ] Constant folding (`2 + 3` → `5`, comparisons of constants, folding into
-      `movq $k`)
-- [ ] Dead code / constant-condition elimination (`if (0) ...`)
+- [x] Constant folding (`2 + 3` → `5`, comparisons of constants, folding into
+      `movq $k`) — **folds in semantic analysis**, after the node's type is
+      known, rewriting the node *in place* so parents see the folded form
+      without re-parenting. `--dump-ast` shows `14`, not `(2 + 3 * 4)`.
+      Conservative by design: only integer results, never unsigned operands,
+      never a division by zero, never the comma operator
+- [x] Dead code / constant-condition elimination (`if (0) ...`) — **in
+      codegen**, not semantic: only the live arm of `if`/`? :` is emitted,
+      `while (0)` emits nothing, `for (init; 0; step)` emits only the init,
+      and `do { } while (0)` emits the body with its labels but no back-jump.
+      The dead arm is still parsed and type-checked, so deleting output never
+      deletes a diagnostic
 - [ ] Copy propagation + dead variable elimination for the current
       push/pop stack machine
 - [ ] Replace the expression stack machine with a simple register allocator
@@ -200,7 +212,12 @@ Linux; `tests/diff/02_stack_args.c` cross-checks stack arguments against gcc.
 
 **Acceptance:** identical exit codes across all tests (differential check), and
 the tour's step-5 contrast can now show *some* of mycc's own folding as a
-learning example.
+learning example. *Partly met:* `--no-opt` exists so the two back ends can be
+compared directly (across the current suite that is 8,593 lines of assembly
+unoptimized vs 7,271 optimized — 15.4% removed), every program in `tests/` was
+run through both paths with identical exit codes, and `tests/diff/03_folding.c`
+cross-checks the folded semantics against gcc. Still open in this phase: copy
+propagation / dead variables, and the register allocator.
 
 ---
 
@@ -229,8 +246,13 @@ interpreter-vs-codegen mismatches (a strong correctness proof).
 ## Phase 7 — Stretch goals
 
 - [ ] Floating point: `double`, SSE instructions, comparisons, conversions
-- [ ] Strings as a real type (`char *s = "hi"`, length, escape sequences)
-- [ ] CLang-style `-S`/`-o` flag parity and `--vectorize`? (no — keep scope)
+- ~~Strings as a real type (`char *s = "hi"`, length, escape sequences)~~ —
+  **shipped early, in Phase 4**: string literals are decoded bytes, pooled in
+  `.rodata` and deduplicated, with the full C escape set (BUG-022) and NUL
+  bytes preserved (BUG-023)
+- ~~CLang-style `-S`/`-o` flag parity and `--vectorize`?~~ — **closed, not
+  planned.** `-o` already exists and mycc only ever emits assembly, which *is*
+  `-S`; `--vectorize` is out of scope for a stack machine and always was.
 - [ ] Custom IR (SSA-lite) as the middle representation, enabling aggressive
       optimization and a backend split (teaching showcase)
 - [ ] Release packaging: CI artifacts, `w64devkit`/MSYS2 instructions for

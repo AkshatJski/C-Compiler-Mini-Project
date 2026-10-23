@@ -54,6 +54,7 @@ static Symbol *resolve_var(ASTNode *node);
 static int count_params(ASTNode *fn);
 static int count_args(ASTNode *call);
 static int fold_const(ASTNode *node, long long *out);
+static void fold_literal(ASTNode *expr);
 static void check_object_complete(ASTNode *decl);
 static int types_compatible(const Type *to, const Type *from, ASTNode *rhs);
 static int same_type(const Type *a, const Type *b);
@@ -285,6 +286,67 @@ static int fold_const(ASTNode *node, long long *out)
         return 0;
     }
     return 0;
+}
+
+/* Phase 5: constant folding.
+ *
+ * Runs at the end of check_expr(), once the node's type is known, and
+ * rewrites the node *in place* into an integer literal. In place matters:
+ * every parent already holds a pointer to this node, so replacing the node
+ * with a fresh one would leave the tree pointing at the old, unfolded copy.
+ * Mutating the node means no re-parenting anywhere.
+ *
+ * Deliberately conservative, because a folding bug produces a silently wrong
+ * program, which is the one failure this project refuses to ship:
+ *  - only integer results fold; a pointer result (`p + 0`) must stay a
+ *    pointer, and there is no floating point yet;
+ *  - unsigned operands are left alone: fold_const() works in signed
+ *    arithmetic, so `u / 2` with a large `u` would fold to a wrong value;
+ *  - division by zero is not folded (fold_const declines), so a trap stays a
+ *    trap instead of becoming a number;
+ *  - the comma operator is not folded: its left side exists for its effects;
+ *  - `(char)x` is not folded, because narrowing has its own semantics that
+ *    codegen already implements correctly -- no need to write it twice.
+ *
+ * Folding a `?:` whose condition is constant is still correct even when the
+ * dead arm has side effects: C does not evaluate that arm either.
+ */
+static void fold_literal(ASTNode *expr)
+{
+    if (!g_optimize || expr == NULL)
+    {
+        return;
+    }
+    if (expr->type != AST_BINARY_OP && expr->type != AST_TERNARY)
+    {
+        return;
+    }
+    if (expr->val_type == NULL || expr->val_type->kind != TYPE_INT)
+    {
+        return;
+    }
+    if (expr->left != NULL && expr->left->val_type != NULL &&
+        binary_is_unsigned(expr->left->val_type,
+                           expr->right != NULL ? expr->right->val_type : NULL))
+    {
+        return;
+    }
+
+    long long value;
+    if (!fold_const(expr, &value))
+    {
+        return;
+    }
+
+    expr->type = AST_INT_LIT;
+    expr->value = value;
+    expr->vtype = TYPE_INT;
+    expr->val_type = type_int();
+    expr->left = NULL;
+    expr->right = NULL;
+    expr->cond = NULL;
+    /* `line`/`col` are kept: the folded literal still points at the token
+     * that produced it, which is what a future diagnostic will quote. */
 }
 
 static int count_params(ASTNode *fn)
@@ -942,6 +1004,13 @@ static void check_expr(ASTNode *expr)
         report_error(expr->line, expr->col, "invalid expression");
         break;
     }
+
+    /* Phase 5, last step of typing a node: if the whole expression is
+     * computable now, replace it with its value. Doing this *after* the type
+     * is known is what lets the fold respect `unsigned` and pointer
+     * arithmetic; doing it *here* is what lets a parent, which called us on
+     * its child, see the folded child. */
+    fold_literal(expr);
 }
 
 static void check_switch(ASTNode *node, CheckCtx *ctx)

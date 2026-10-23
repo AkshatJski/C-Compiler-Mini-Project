@@ -95,17 +95,23 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 - `--dump-tokens` / `--dump-ast` reveal the compiler's internals;
   `--target=linux|windows|darwin` picks the assembler flavour (defaulting to
   the host mycc was built for).
+- **One optimizer switch:** `--no-opt` disables Phase 5's constant folding and
+  constant-condition elimination, emitting exactly what the pre-optimizer code
+  generator emitted. It exists so the two back ends can be compared line for
+  line (`mycc hello.c -o a.s` vs `mycc --no-opt hello.c -o b.s`) and so that an
+  optimizer bug is always bisectable against a known-good path.
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
-- **Tests:** 30 positive programs (`tests/01…30`) and 41 rejection tests
-  (`tests/errors/`), 72 checks in total — covering pointers (`12`), arrays
+- **Tests:** 32 positive programs (`tests/01…32`) and 41 rejection tests
+  (`tests/errors/`), 75 checks in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
   (`22`), single evaluation of lvalues (`23`), the BOM (`24`), the
   fall-off-the-end warning (`25`), hello world (`26`), the print built-ins
-  (`27`), `extern printf` (`28`), string escapes (`29`), and NUL bytes inside
-  a literal (`30`). Positive tests
+  (`27`), `extern printf` (`28`), string escapes (`29`), NUL bytes inside
+  a literal (`30`), constant folding (`31`), and constant-condition
+  elimination (`32`). Positive tests
   assert the program's real **output** (`// EXPECT-OUT:`), not just its exit
   code. `tests/diff/` additionally holds programs that are compiled by **both**
   mycc and gcc and required to return the same exit code (`difftest.bat` /
@@ -118,6 +124,10 @@ pointer (`struct P *p`) instead, and the compiler says so. `int` remains
 64-bit (see the open Phase 1 decision in
 [ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too. `main` must still
 be `int main(void)`; `argv` is not available to mycc programs yet.
+The optimizer is deliberately shallow so far — constant folding and
+constant-condition elimination only. There is no register allocator: every
+expression still goes through the stack machine, and that is a documented
+tradeoff rather than an oversight (see `ROADMAP.md` Phase 5).
 
 ## A tiny example
 
@@ -228,4 +238,6 @@ exit-code suite and the differential test.
 - [instructions.md](instructions.md) — full manual: language, build/test/showcase, troubleshooting.
 - [ROADMAP.md](ROADMAP.md) — planned phases: C-fidelity fixes, more language,
   I/O and the ABI, optimization, diagnostics and tooling. Phases 1–4 and 6 are
-  complete; Phase 5 (optimization) is next.
+  complete; Phase 5 (optimization) is in progress — constant folding and
+  constant-condition elimination have landed, copy propagation and the register
+  allocator are next.

@@ -48,6 +48,14 @@ void struct_add_member(Type *struct_type, const char *name, Type *member_type);
  * "int[4]") so diagnostics can quote the type a program actually used. */
 void type_describe(const Type *t, char *buf, size_t size);
 
+/* Phase 5 optimizer switches. One global, read by semantic analysis
+ * (constant folding) and by codegen (constant conditions), and cleared by
+ * `--no-opt`. Keeping one flag rather than a pass list is deliberate: with
+ * two passes there is nothing to configure, and a single switch means the
+ * unoptimized path is always exactly the pre-Phase-5 compiler, which is what
+ * makes an optimizer bug bisectable instead of mysterious. */
+extern int g_optimize;
+
 /* Shared nesting limit: the parser stops descending past this depth and the
  * code generator refuses to push past it, so no input can corrupt either
  * stage (BUG-009, BUG-010). */

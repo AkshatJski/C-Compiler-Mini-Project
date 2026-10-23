@@ -13,7 +13,7 @@ static void usage(void)
 {
     fprintf(stderr,
             "Usage: mycc <source.c> [-o <output.s>] "
-            "[--target=linux|windows|darwin] [-w]\n");
+            "[--target=linux|windows|darwin] [--no-opt] [-w]\n");
     fprintf(stderr,
             "  Compiles a C-subset program to AMD64 AT&T assembly.\n");
     fprintf(stderr,
@@ -24,6 +24,10 @@ static void usage(void)
             "  --dump-tokens  print the token stream, then stop\n");
     fprintf(stderr,
             "  --dump-ast     print the syntax tree (after checks), then stop\n");
+    fprintf(stderr,
+            "  --no-opt       disable constant folding and constant-condition\n");
+    fprintf(stderr,
+            "                 elimination (the pre-optimizer code generator)\n");
     fprintf(stderr,
             "  -w             suppress warnings (they never affect the exit "
             "status)\n");
@@ -89,6 +93,11 @@ int main(int argc, char **argv)
             /* Warnings are advisory; this only silences the channel, it never
              * changes the exit status. */
             set_warnings_enabled(0);
+        } else if (strcmp(argv[i], "--no-opt") == 0) {
+            /* Phase 5: emit exactly what the pre-optimizer compiler emitted.
+             * Used to compare the two back ends instruction for instruction,
+             * and to bisect an optimizer bug against a known-good path. */
+            g_optimize = 0;
         } else if (strncmp(argv[i], "--target=", 9) == 0) {
             const char *target_name = argv[i] + 9;
             if (strcmp(target_name, "linux") == 0) {

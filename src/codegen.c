@@ -338,6 +338,25 @@ static void gen_strings(void)
  * into the full 64-bit register, sign-extended for `char` and zero-extended
  * for `unsigned char` (which is what makes `unsigned char` arithmetic match
  * C's integer promotion). Everything else is a plain 64-bit load. */
+/* Phase 5: a condition that is already a literal needs no compare and no
+ * jump -- the branch is decided here, in the compiler, and only the arm that
+ * can actually run is emitted. The dead arm is not *forgotten*: semantic
+ * analysis already type-checked it and already emitted any warnings, so
+ * deleting it from codegen cannot hide an error or lose a diagnostic.
+ *
+ * Returns 0 when the condition is not a literal, so every caller reads as
+ * "if this is constant, take the short path; otherwise emit the general
+ * path". */
+static int const_truth(ASTNode *cond, int *truth)
+{
+    if (!g_optimize || cond == NULL || cond->type != AST_INT_LIT)
+    {
+        return 0;
+    }
+    *truth = cond->value != 0;
+    return 1;
+}
+
 static const char *load_op_for(const Type *t, int is_char)
 {
     if (!is_char)
@@ -760,6 +779,14 @@ static void gen_postfix(ASTNode *node)
 
 static void gen_ternary(ASTNode *node)
 {
+    int truth;
+    if (const_truth(node->cond, &truth))
+    {
+        /* `1 ? a : b` is `a`. The other arm was still type-checked. */
+        gen_expr(truth ? node->left : node->right);
+        return;
+    }
+
     int id = label_counter++;
     gen_expr(node->cond);
     emit_line("\tcmpq $0, %%rax");
@@ -967,6 +994,21 @@ static void gen_expr(ASTNode *node)
 
 static void gen_if(ASTNode *node)
 {
+    int truth;
+    if (const_truth(node->cond, &truth))
+    {
+        /* `if (1)` / `if (0)`: emit only the live arm. */
+        if (truth)
+        {
+            gen_stmt(node->body);
+        }
+        else if (node->right != NULL)
+        {
+            gen_stmt(node->right);
+        }
+        return;
+    }
+
     int id = label_counter++;
     gen_expr(node->cond);
     emit_line("\tcmpq $0, %%rax");
@@ -989,6 +1031,14 @@ static void gen_if(ASTNode *node)
 
 static void gen_while(ASTNode *node)
 {
+    int truth;
+    if (const_truth(node->cond, &truth) && !truth)
+    {
+        /* `while (0)` never runs its body, so nothing is emitted -- not even
+         * labels: any `break`/`continue` inside is unreachable and is not
+         * reached by the walker either. */
+        return;
+    }
     if (!ctx_push_ok())
     {
         return;
@@ -1011,6 +1061,8 @@ static void gen_while(ASTNode *node)
 
 static void gen_do_while(ASTNode *node)
 {
+    int truth;
+    int cond_is_const = const_truth(node->cond, &truth);
     if (!ctx_push_ok())
     {
         return;
@@ -1023,6 +1075,16 @@ static void gen_do_while(ASTNode *node)
     emit_line(".L_do_start_%d:", id);
     gen_stmt(node->body);
     emit_line(".L_do_cont_%d:", id);
+    if (cond_is_const && !truth)
+    {
+        /* `do { ... } while (0)`: the body runs exactly once. The labels stay
+         * (a `break`/`continue` in the body needs a target, and `continue`
+         * lands on the step), only the back-jump goes away. */
+        emit_line(".L_do_end_%d:", id);
+        break_sp--;
+        continue_sp--;
+        return;
+    }
     gen_expr(node->cond);
     emit_line("\tcmpq $0, %%rax");
     emit_line("\tjne .L_do_start_%d", id);
@@ -1033,6 +1095,18 @@ static void gen_do_while(ASTNode *node)
 
 static void gen_for(ASTNode *node)
 {
+    int truth;
+    if (const_truth(node->cond, &truth) && !truth)
+    {
+        /* `for (i = 0; 0; i++)`: the init still runs (it may have effects),
+         * the body never does. Emitting the init and nothing else is exactly
+         * what the program does. */
+        if (node->left != NULL)
+        {
+            gen_stmt(node->left);
+        }
+        return;
+    }
     if (!ctx_push_ok())
     {
         return;

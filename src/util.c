@@ -9,6 +9,9 @@ static int g_warning_count = 0;
 static int g_warnings_enabled = 1;
 static const char *g_source_path = NULL;
 
+/* Phase 5: on by default, cleared by --no-opt. */
+int g_optimize = 1;
+
 ASTNode *ast_node(ASTNodeType type, int line, int col)
 {
     ASTNode *node = xcalloc(1, sizeof(ASTNode));

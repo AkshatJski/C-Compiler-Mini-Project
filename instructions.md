@@ -754,6 +754,12 @@ Notes:
   error: `error: unknown target 'beos' (use linux, windows or darwin)`.
 - `-w` silences warnings (errors are unaffected), e.g.
   `mycc.exe -w src.c -o out.s`.
+- `--no-opt` turns off the Phase 5 optimizer (constant folding and
+  constant-condition elimination). Useful for showing what the optimizer
+  actually did: compile the same file twice and compare the assembly, e.g.
+  `mycc.exe demo.c -o opt.s` and `mycc.exe --no-opt demo.c -o plain.s`. The
+  program behaves identically either way — that is the invariant the test suite
+  enforces by running every program in `tests\` through both paths.
 - Two diagnostic flags show the compiler's inner workings:
   - `mycc.exe --dump-tokens demos\simple.c` — print the lexer output: every
     token (number, identifier, keyword, operator, bracket) with its
