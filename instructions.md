@@ -19,7 +19,7 @@ The overall pipeline looks like this:
 ```
 your_program.c  ──> mycc ──> your_program.s (assembly)
 your_program.s  ──> gcc ──> your_program    (executable)
-your_program    ──> run ──> exit code with the result
+your_program    ──> run ──> output + exit code with the result
 ```
 
 The compiler is deliberately self-contained: a hand-written lexer, a
@@ -36,13 +36,14 @@ C-Compiler-Mini-Project/
 ├── test.bat            Test script (Windows: positive + error suites)
 ├── difftest.sh         Differential test vs the host compiler (Linux / WSL)
 ├── difftest.bat        Differential test vs gcc (Windows)
-├── showcase.bat        Demo script (Windows: example.c -> run, exit 197)
+├── showcase.bat        Demo script (Windows: example.c -> 197, then hello.c prints)
 ├── tour.bat            Guided narrated demo (Windows, press any key)
 ├── tour.sh             Guided narrated demo (Linux / WSL)
 ├── tour2.bat           DEEP-DIVE tour: the four stages, with --dump-tokens
 │                       and --dump-ast (Windows)
 ├── tour2.sh            DEEP-DIVE tour: the four stages (Linux / WSL)
 ├── example.c           Demo program (returns 197)
+├── hello.c             Smallest printing program (Phase 4)
 ├── demos/              Tiny showcase programs (whole assembly fits on screen)
 │   ├── simple.c          square(5)+1 -> exit 26
 │   ├── loop.c            1+2+...+10 -> exit 55
@@ -123,13 +124,13 @@ C-Compiler-Mini-Project/
    is what makes nested blocks and variable shadowing work.
 
 4. **Code generation** (`src/codegen.c`) — walks the AST again and emits
-   assembly. Arguments go in six fixed registers (calls into a function use
-   the same six registers on both targets, so caller and callee agree), the
-   stack stays 16-byte aligned at every `call` (required by both the System V
-   and Microsoft x64 ABIs), and function results are returned in `%rax`.
-   No target-specific ELF/COFF details leak into the instruction stream, so
-   the same `.s` output (modulo a few section directives) builds on both
-   Linux and Windows.
+   assembly. Arguments go in the registers the *platform* ABI assigns — six on
+   System V (`%rdi %rsi %rdx %rcx %r8 %r9`), four on Microsoft x64
+   (`%rcx %rdx %r8 %r9` plus a mandatory 32-byte shadow space), with anything
+   further passed on the stack — so caller and callee agree *and* the OS/CRT
+   can be called. The stack stays 16-byte aligned at every `call`, and function
+   results come back in `%rax`. Only symbol-decoration details (a leading `_`
+   on Mach-O, `@PLT` on ELF) and section directives differ between targets.
 
 ---
 
@@ -258,7 +259,9 @@ Everything below is supported by the compiler.
   (`int *pick(void)`, `struct Node *make(void)`). (`char` and
   `unsigned char` return types are not supported — use `int` or
   `unsigned int`.)
-- Up to **6 parameters** (the x86-64 register-argument limit we support).
+- Any number of parameters: the first four (Windows) or six (System V/Linux,
+  macOS) travel in registers and the rest are passed on the stack, exactly as
+  the platform ABI specifies.
   Parameters may be scalars, pointers, or arrays (which decay to pointers);
   a **struct by value** is rejected with a message suggesting the pointer
   form.
@@ -274,6 +277,49 @@ Everything below is supported by the compiler.
   (C only guarantees that for `main`) **and** produces a warning:
   `warning: control reaches end of non-void function 'f'`. The exit status is
   unaffected — warnings are advisory (see "Warnings" below).
+
+### Printing and library calls
+- **String literals** — `"hello\n"` is a `char *` pointing at bytes the
+  compiler places in `.rodata` (Mach-O: `__TEXT,__cstring`). Identical literals
+  are emitted once and shared. All C escapes work: `\n \t \r \0 \a \b \f \v \\
+  \' \" \xHH` and octal `\ooo`.
+- **Four printing built-ins**, usable with no declaration and no `#include`:
+
+  | call | prints |
+  |---|---|
+  | `print_int(x)` | `x` in decimal, then a newline |
+  | `print_char(c)` | one character |
+  | `print_str(s)` | a `char *` string, no newline added |
+  | `print_endl()` | one newline |
+
+  They are ordinary symbols as far as checking is concerned: a call is
+  type-checked like any other function call. Semantic analysis then rewrites
+  `print_int(x)` into `printf("%lld\n", x)`, `print_str(s)` into
+  `printf("%s", s)`, `print_char(c)` into `putchar(c)` and `print_endl()` into
+  `putchar('\n')`, so code generation has no special cases and `--dump-ast`
+  shows the call that will actually run. Defining your own function with one
+  of these names overrides the built-in.
+- **`extern` declarations** bring in any C library function:
+
+  ```c
+  extern int printf(char *fmt);     /* the body lives in the C runtime */
+  ```
+
+  An `extern` prototype needs no definition (it is exempt from the
+  declared-but-never-defined check) and is checked with **variadic** arity:
+  at least the declared parameters, and any number more. `printf`, `puts` and
+  `putchar` are pre-registered, so the common cases need no declaration at
+  all:
+
+  ```c
+  int main(void) {
+      printf("x = %lld, name = %s\n", 42, "mycc");
+      return 0;
+  }
+  ```
+
+  Because mycc's `int` is 64-bit, `%lld` is the correct specifier for it on
+  all three targets (`%d` would read only 32 bits).
 
 ### Variables and scope
 - Global variables, including ones with **constant-folded initializers**
@@ -296,9 +342,9 @@ prog.c: compilation aborted during semantic analysis
 ```
 
 Unsupported constructs get one precise message instead of a cascade — a
-string literal says `error: string literals are not supported by mycc`, and a
 preprocessor line says `error: preprocessor directives are not supported by
-mycc (no #include, #define, #if)`. Neither is followed by bogus follow-on
+mycc (no #include, #define, #if)`, and an unclosed string says `error:
+unterminated string literal`. Neither is followed by bogus follow-on
 errors: the lexer keeps reading after reporting.
 
 A failed compilation also leaves **no output file** behind: the assembly is
@@ -368,10 +414,24 @@ comparisons, …) can be added without touching the error path.
   pushed onto the stack, then popped into the argument registers in order.
   Pushing instead of filling registers directly is what makes nested calls
   safe (`add(add(a,b), add(1,2))`) — an inner call can never clobber an
-  argument register that is still needed. The stack is padded to stay
-  16-byte aligned at the `call` instruction — a requirement shared by both
-  the System V AMD64 and Microsoft x64 ABIs, so the same scheme works for
-  Linux and Windows.
+  argument register that is still needed. Any argument beyond the register
+  slots is simply *not* popped, so it stays on the stack in exactly the order
+  the callee expects. The stack is padded to stay 16-byte aligned at the
+  `call` instruction, counting the stack arguments and the Windows home area.
+
+  The registers are the platform's, not a private convention:
+
+  | | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th+ | shadow space | variadic marker |
+  |---|---|---|---|---|---|---|---|---|---|
+  | System V (Linux, macOS) | `%rdi` | `%rsi` | `%rdx` | `%rcx` | `%r8` | `%r9` | stack | none | `%al` = 0 |
+  | Microsoft x64 (Windows) | `%rcx` | `%rdx` | `%r8` | `%r9` | stack | stack | stack | 32 bytes | none |
+
+  The callee copies its register parameters into its own frame and reads stack
+  arguments from above it — `16(%rbp)` on System V, `48(%rbp)` on Windows
+  (past the saved `%rbp`, the return address, and the 32-byte home area).
+  External calls are emitted as `name@PLT` on ELF so position-independent
+  output still links; a call to a function defined in the same file stays a
+  plain `call`. On Mach-O every symbol gets a leading `_`.
 
 - **Recursion safety.** Parameters are spilled into the *callee's own* stack
   frame at negative offsets (`-8(%rbp)`, `-16(%rbp)`, ...). An earlier
@@ -650,21 +710,31 @@ All differential tests passed
 .\showcase.bat
 ```
 
-This compiles `example.c`, assembles it, runs it, and prints the result.
+This compiles `example.c`, assembles it, runs it, and prints the result — then
+does the same for `hello.c`, whose output you can read.
 **Expected output:**
 
 ```
-[1/3] Compiling example.c to assembly...
-[2/3] Assembling and linking...
-[3/3] Running...
+[1/5] Compiling example.c to assembly...
+[2/5] Assembling and linking...
+[3/5] Running...
 
-The program returned: 197
-Expected:               197
+  The program returned: 197
+  Expected:             197
+
+[4/5] Compiling hello.c (real output, Phase 4)...
+[5/5] Running it...
+--------------------------------------------
+Hello, world!
+120
+3 + 4 = 7, and 2 * 21 = 42
+--------------------------------------------
 ```
 
 Why 197? `example.c` computes `fact(5) = 120` plus the sum of primes up to
 20 (`2+3+5+7+11+13+17+19 = 77`), so `120 + 77 = 197`. The exit code being
-exactly 197 proves the compiler works end to end on Windows.
+exactly 197 proves the compiler works end to end on Windows; `hello.c` then
+proves the Phase 4 calling convention by printing through the C runtime.
 
 ### 5.4 Manual usage (the commands behind the scripts)
 
@@ -748,7 +818,7 @@ Sanity check:
 ```
 ls
 ```
-Expected: `Makefile  build.bat  build  demos  difftest.bat  difftest.sh  example.c  include  instructions.md  mycc  README.md  ROADMAP.md  src  test.bat  tests`
+Expected: `Makefile  build.bat  build  demos  difftest.bat  difftest.sh  example.c  hello.c  include  instructions.md  mycc  README.md  ROADMAP.md  src  test.bat  tests`
 
 ### 6.2 Build the compiler
 
@@ -1036,8 +1106,10 @@ int main(void) {
   type; `char` returns are rejected. Function *parameters* are declared as
   pointers — `int f(int a[10])` is a syntax error; write `int f(int *a)`
   instead.
-- No `#include`, no preprocessor, no string literals, no printing.
-  Programs communicate results through their **exit code** (`return`).
+- No `#include` and no preprocessor. `printf` and friends are reachable
+  through `extern` (or are pre-registered), and the four `print_*` built-ins
+  cover the common cases - see "Printing and library calls" above.
+- `main` must be `int main(void)`: `argc`/`argv` are not available yet.
 - `switch` supports integer/enum-style cases only — no `range` cases, and
   `case` labels must be compile-time constants.
 
@@ -1055,7 +1127,9 @@ int main(void) {
 | `gcc: command not found` (in WSL)                | gcc is not installed in WSL — `sudo apt install build-essential` (section 4, Option B). |
 | `cannot open source file '...'`                  | The file does not exist, or the path has a typo/spaces issue; quote the path. |
 | `error: unexpected character`                    | The program uses a feature the language does not support (see section 7). |
-| `error: preprocessor directives are not supported` / `string literals are not supported` | `#include`, `#define`, `#if` and `"..."` do not exist in the subset (section 7). |
+| `error: preprocessor directives are not supported` | `#include`, `#define` and `#if` do not exist in the subset (section 7). Library functions are reached through `extern`, or use the `print_*` built-ins. |
+| `error: unterminated string literal` | The closing `"` is missing, or the literal spans a line break. |
+| Linker error naming an undefined symbol | The call has no definition and was not declared `extern`. Declare it (`extern int printf(char *fmt);`) or implement it. |
 | `error: nesting too deep (limit is 256 levels)`  | The program nests blocks/expressions more than 256 deep — restructure it. |
 | `warning: control reaches end of non-void function` | A non-`void` function can reach its closing brace. Add a `return`, or silence it with `-w`. |
 | `make difftest` prints a mismatch                   | mycc and gcc disagree: a real miscompilation. Worth reporting/fixing. |
@@ -1145,7 +1219,7 @@ stages** using the new dump flags:
 5. **Stage 4, codegen**: `mycc demos\simple.c` prints the assembly; walk
    the frame setup, the `push/pop` expression engine, and `call`.
 6. End to end: `example.c` → 197, plus the full test suite, then a
-   by-file line count of the ~5,800-line hand-written compiler.
+   by-file line count of the ~6,600-line hand-written compiler.
 
 Great talking point: the same tree you can print with `--dump-ast` is
 exactly what the code generator walks to emit assembly.
@@ -1153,7 +1227,7 @@ exactly what the code generator walks to emit assembly.
 ### The one-line explanations
 
 - "A compiler turns readable code into CPU instructions. gcc does this
-  inside a black box; mycc is ~6,200 lines of C that shows you every step."
+  inside a black box; mycc is ~7,000 lines of C that shows you every step."
 - "mycc emits **exactly** what you write — one instruction per operation.
   gcc is an optimizer that rewrites your program until it no longer looks
   like your source. For learning, readable wins; for production, gcc wins."
@@ -1163,11 +1237,13 @@ exactly what the code generator walks to emit assembly.
 
 ### Alternate quick demos
 
-- **The return-code trick**: `.\demos` programs have no `printf` — they
-  "print" by their exit code. `mycc.exe demos\loop.c -o build\loop.s`,
-  then `gcc -o build\loop.exe build\loop.s` and run it → `%errorlevel%`
-  is `55`.
-- **Read the whole compiler**: `src/` is ~5,800 lines across 8 files.
+- **Exit codes are still a fine output channel**: `demos\loop.c` "prints" by
+  returning its result. `mycc.exe demos\loop.c -o build\loop.s`, then
+  `gcc -o build\loop.exe build\loop.s` and run it → `%errorlevel%` is `55`.
+- **Show real output instead**: `mycc.exe tests\26_hello_world.c -o
+  build\hello.s`, link it, and it prints `Hello, world!` — the same program,
+  now talking to the CRT through the platform ABI.
+- **Read the whole compiler**: `src/` is ~6,600 lines across 8 files.
   `src/codegen.c` is the shortest path to "aha" — it is just a walk over
   the syntax tree emitting instructions.
 - **Catch a mistake live**: feed mycc a broken program and show the

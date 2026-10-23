@@ -153,27 +153,38 @@ sums it via pointers. This phase proves the compiler can host real algorithms.
 
 ---
 
-## Phase 4 — I/O & runtime
+## Phase 4 - I/O & runtime
 
-- [ ] Built-in `print_int` / `print_char` / `print_str` wired to the CRT
-      (`printf`-subset or raw `write`) so programs stop living only in exit
-      codes
-- [ ] `--run-io` / runtime library compiled into every program (still a single
-      self-contained `.s`)
+- [x] Built-in `print_int` / `print_char` / `print_str` / `print_endl` wired to
+      the CRT: semantic analysis rewrites them into `printf` / `putchar` calls,
+      so they need no declaration and no `#include`, and `--dump-ast` shows the
+      call that will actually run
+- [x] String literals: the lexer decodes them (full C escape set, including
+      octal - BUG-022) and codegen emits them into `.rodata` (Mach-O:
+      `__TEXT,__cstring`), deduplicated. `"..."` is a real `char *`
+- [x] `extern` declarations at file scope for library functions, exempt from
+      the declared-but-never-defined check (BUG-015) and checked with variadic
+      arity (`argc >= param_count`), because `printf` takes more arguments than
+      it declares. `printf`, `puts` and `putchar` are pre-registered, so the
+      common cases need no declaration at all
+- [x] A separate runtime library was not needed: every program is still a
+      single self-contained `.s`, and the four helpers cost four call sites
+      rather than a linked object
 - [x] Enforce the interim posture: `main` must be declared `int main(void)`.
-      Until the ABI split below exists, `int main(int argc, char **argv)` gets
-      a clean compile-time rejection instead of an `argc` that is garbage on
-      Windows — BUG-014
-- [ ] Define the official calling convention **now** that external calls exist:
-      option A keep the internal 6-register scheme but only call mycc code;
-      option B emit the real Microsoft x64 ABI (`rcx/rdx/r8/r9` + 32-byte
-      shadow space) under `--target=windows` — enabling calls into the OS/CRT.
-      Today the emitted calls are the *internal* scheme on all three targets,
-      which is correct only because a mycc program never calls into libc.
+      `int main(int argc, char **argv)` still gets a clean compile-time
+      rejection rather than a garbage `argv` on Windows - BUG-014
+- [x] Define the official calling convention now that external calls exist:
+      **option B** - the real platform ABI on every target. SysV passes 6
+      arguments in `rdi/rsi/rdx/rcx/r8/r9` and needs `%al` = number of vector
+      registers for variadic calls; Windows x64 passes 4 in `rcx/rdx/r8/r9`
+      plus a 32-byte shadow space. Arguments past the register slots go on the
+      stack and are read above the callee's frame, so the old "more than 6
+      parameters" limit is gone. External calls go through `@PLT` on ELF, and
+      internal calls stay direct
 
-**Acceptance:** a hello-world test prints text and returns 0; a program calls
-`printf` on Windows via option B (or is clearly documented as internal-only
-under option A).
+**Acceptance:** met. `tests/26_hello_world.c` prints `Hello, world!` and exits
+0; `tests/28_extern_printf.c` calls `printf` through `extern` on Windows and
+Linux; `tests/diff/02_stack_args.c` cross-checks stack arguments against gcc.
 
 ---
 

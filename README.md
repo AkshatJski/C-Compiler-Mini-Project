@@ -7,13 +7,13 @@ that assembles and runs on **Linux** (ELF, System V) and **Windows**
 emits Mach-O symbol names for macOS.
 
 ```
-source.c ──> mycc ──> source.s ──> gcc ──> executable ──> exit code
+source.c ──> mycc ──> source.s ──> gcc ──> executable ──> output + exit code
 ```
 
 ## What's inside
 
 - Hand-written lexer, recursive-descent parser, scoped symbol table,
-  semantic analysis, and code generator (~6,200 lines of C99 across `src/`
+  semantic analysis, and code generator (~7,000 lines of C99 across `src/`
   and `include/`).
 - **Types:** `int` (64-bit), `char` (signed, one byte), their `unsigned`
   counterparts (`unsigned int`, `unsigned char`, and bare `unsigned`), plus
@@ -56,24 +56,39 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ex
   `for (…; …; i++, j--)`). An lvalue with a side effect — `a[i++] += 5`,
   `*p++ = 1`, `a[i++]++` — is evaluated **exactly once**.
 - **Programs:** multiple functions with recursion and **prototypes / forward
-  declarations** (`int f(int);`), up to 6 parameters, `int`/`void` return
+  declarations** (`int f(int);`), any number of parameters (arguments past the
+  register slots are passed on the stack), `int`/`void` return
   types (including pointer returns such as `int *`), globals with
   constant-folded initializers, multi-declarator declarations, and block
   scoping. `main` must be declared `int main(void)`; a program without
   `main`, or with an undefined function still being called, is rejected
   during compilation instead of failing at link time.
 - **Literals:** decimal, hexadecimal (`0x…`), and octal (`0…`) integers with
-  optional `u`/`l` suffixes; character constants (`'A'`, `'\n'`, `'\x41'`).
-  Malformed literals are errors rather than silent zeroes: `08` and `09`,
-  `0x` with no digits, and an unterminated character constant are all
-  reported. A UTF-8 byte-order mark (which Windows editors add) is skipped.
+  optional `u`/`l` suffixes; character constants (`'A'`, `'\n'`, `'\x41'`);
+  and string literals with the full C escape set (`\n \t \r \0 \a \b \f \v \\
+  \' \" \xHH \ooo`). A literal string is emitted once into `.rodata` and shared
+  by every use. Malformed literals are errors rather than silent zeroes: `08`
+  and `09`, `0x` with no digits, and an unterminated character constant or
+  string literal are all reported. A UTF-8 byte-order mark (which Windows
+  editors add) is skipped.
+- **Output and library calls:** programs can print. Four built-ins need no
+  declaration and no `#include` — `print_int(x)` (decimal + newline),
+  `print_char(c)`, `print_str(s)` and `print_endl()`. String literals
+  (`"hello\n"`) are real `char *` values stored in `.rodata`. `extern int
+  printf(char *fmt);` declares any C library function, and `printf`, `puts`
+  and `putchar` are pre-registered so the common cases work directly.
+- **Calling convention:** the real platform ABI, not a private one. System V
+  passes 6 integer arguments in `rdi/rsi/rdx/rcx/r8/r9` and sets `%al` for
+  variadic calls; Windows x64 passes 4 in `rcx/rdx/r8/r9` plus the mandatory
+  32-byte shadow space. Anything beyond that goes on the stack. External calls
+  go through `@PLT` on ELF; internal calls stay direct.
 - **Diagnostics:** friendly errors with `file:line:col`, including lvalue
   checks, unknown struct members, scope/`main`/`break`/`continue`/`switch`
   validation, rejection of non-constant global initializers, assignment to an
   array, dereferencing a `void *`, incomplete/zero-sized objects, struct
   redefinition, and precise messages (one error, not a cascade) for
-  constructs the subset does not have — `#include`, other preprocessor
-  directives, and string literals.
+  constructs the subset does not have — `#include` and other preprocessor
+  directives.
 - **Warnings:** advisory diagnostics that never change the exit status
   (`<file>:<line>:<col>: warning: …`), e.g. `control reaches end of non-void
   function 'f'`. `-w` silences the warning channel without affecting errors.
@@ -82,23 +97,27 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ex
   the host mycc was built for).
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
-- Programs report results through their **exit code** (there is no `printf`).
-- **Tests:** 25 positive programs (`tests/01…25`) and 41 rejection tests
-  (`tests/errors/`), 68 checks in total — covering pointers (`12`), arrays
+- **Tests:** 30 positive programs (`tests/01…30`) and 41 rejection tests
+  (`tests/errors/`), 72 checks in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
-  (`22`), single evaluation of lvalues (`23`), the BOM (`24`), and the
-  fall-off-the-end warning (`25`). `tests/diff/` additionally holds programs
-  that are compiled by **both** mycc and gcc and required to return the same
-  exit code (`difftest.bat` / `make difftest`).
+  (`22`), single evaluation of lvalues (`23`), the BOM (`24`), the
+  fall-off-the-end warning (`25`), hello world (`26`), the print built-ins
+  (`27`), `extern printf` (`28`), string escapes (`29`), and NUL bytes inside
+  a literal (`30`). Positive tests
+  assert the program's real **output** (`// EXPECT-OUT:`), not just its exit
+  code. `tests/diff/` additionally holds programs that are compiled by **both**
+  mycc and gcc and required to return the same exit code (`difftest.bat` /
+  `make difftest`).
 
 Still out of scope (by design): `float`/`double`, `long`/`short`, `enum`/
-`typedef`, aggregate initializer lists (`int a[2] = {1,2}`), `sizeof`, string
-literals, and the preprocessor. Structs are never passed or returned **by
-value** — take a pointer (`struct P *p`) instead, and the compiler says so.
-`int` remains 64-bit (see the open Phase 1 decision in
-[ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too.
+`typedef`, aggregate initializer lists (`int a[2] = {1,2}`), `sizeof`, and the
+preprocessor. Structs are never passed or returned **by value** — take a
+pointer (`struct P *p`) instead, and the compiler says so. `int` remains
+64-bit (see the open Phase 1 decision in
+[ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too. `main` must still
+be `int main(void)`; `argv` is not available to mycc programs yet.
 
 ## A tiny example
 
@@ -133,12 +152,50 @@ int sum_array(int *a, int n) {
 
 Compiling and running this returns **49** as the process exit code.
 
+## Hello, world
+
+```c
+int main(void) {
+    print_str("Hello, world!\n");
+    print_int(6 * 7);
+    return 0;
+}
+```
+
+```
+$ mycc hello.c -o hello.s && gcc -o hello hello.s && ./hello
+Hello, world!
+42
+```
+
+`print_str` and `print_int` are compiler built-ins: semantic analysis rewrites
+them into `printf("%s", …)` and `printf("%lld\n", …)` calls, which is why no
+declaration or `#include` is needed. To call the C library directly, declare
+it the way C does:
+
+```c
+extern int printf(char *fmt);
+
+int main(void) {
+    printf("x = %lld, name = %s\n", 42, "mycc");   /* real variadic call */
+    return 0;
+}
+```
+
+`--dump-ast` shows the rewrite, so there is no hidden magic:
+
+```
+CALL printf  [3:5]
+  STRING "%lld\n"  [0:0]
+  ...
+```
+
 ## Quick start (Windows / PowerShell)
 
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (68 checks)
+.\test.bat         # runs the positive + error test suites (72 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
 .\showcase.bat     # end-to-end demo, returns 197
 ```
@@ -169,5 +226,6 @@ exit-code suite and the differential test.
 ## Documentation
 
 - [instructions.md](instructions.md) — full manual: language, build/test/showcase, troubleshooting.
-- [ROADMAP.md](ROADMAP.md) — planned phases: C-fidelity fixes, more language, I/O,
-  optimization, diagnostics, and a true Windows calling convention.
+- [ROADMAP.md](ROADMAP.md) — planned phases: C-fidelity fixes, more language,
+  I/O and the ABI, optimization, diagnostics and tooling. Phases 1–4 and 6 are
+  complete; Phase 5 (optimization) is next.
