@@ -13,7 +13,7 @@ static void usage(void)
 {
     fprintf(stderr,
             "Usage: mycc <source.c> [-o <output.s>] "
-            "[--target=linux|windows|darwin] [--no-opt] [-w]\n");
+            "[--target=linux|windows|darwin] [--no-opt] [--sign] [-w]\n");
     fprintf(stderr,
             "  Compiles a C-subset program to AMD64 AT&T assembly.\n");
     fprintf(stderr,
@@ -28,6 +28,10 @@ static void usage(void)
             "  --no-opt       disable constant folding and constant-condition\n");
     fprintf(stderr,
             "                 elimination (the pre-optimizer code generator)\n");
+    fprintf(stderr,
+            "  --sign         embed a provenance string in the program's data\n");
+    fprintf(stderr,
+            "  --version      print the compiler version and exit\n");
     fprintf(stderr,
             "  -w             suppress warnings (they never affect the exit "
             "status)\n");
@@ -76,6 +80,7 @@ int main(int argc, char **argv)
 #endif
     int dump_tokens_flag = 0;
     int dump_ast_flag = 0;
+    int version_flag = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
@@ -98,6 +103,12 @@ int main(int argc, char **argv)
              * Used to compare the two back ends instruction for instruction,
              * and to bisect an optimizer bug against a known-good path. */
             g_optimize = 0;
+        } else if (strcmp(argv[i], "--sign") == 0) {
+            /* Phase 7: put a provenance string in the program's .rodata so
+             * `strings prog.exe` can prove which compiler built it. */
+            g_sign = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            version_flag = 1;
         } else if (strncmp(argv[i], "--target=", 9) == 0) {
             const char *target_name = argv[i] + 9;
             if (strcmp(target_name, "linux") == 0) {
@@ -127,6 +138,19 @@ int main(int argc, char **argv)
         }
     }
 
+    if (version_flag) {
+        /* Phase 7: one line that answers "what am I, and what can I target?"
+         * without compiling anything. Kept deliberately grep-able. */
+        printf("mycc 0.6 - C-subset compiler for AMD64 AT&T assembly\n");
+        printf("targets: linux, windows, darwin (default: %s)\n",
+               target_kind == TARGET_WINDOWS ? "windows"
+               : target_kind == TARGET_DARWIN ? "darwin"
+                                              : "linux");
+        printf("optimizer: %s (--no-opt to disable); --sign stamps programs\n",
+               g_optimize ? "on" : "off");
+        return 0;
+    }
+
     if (source_path == NULL) {
         usage();
         return 1;
@@ -139,6 +163,8 @@ int main(int argc, char **argv)
     if (source == NULL) {
         return 1;
     }
+    /* Phase 6: from here on a diagnostic can quote the offending line. */
+    set_source_text(source);
 
     Lexer lexer;
     lexer_init(&lexer, source);

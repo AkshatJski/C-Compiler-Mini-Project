@@ -10,6 +10,9 @@ void *xrealloc(void *ptr, size_t size);
 char *xstrdup(const char *s);
 
 void set_source_path(const char *path);
+/* Phase 6: the source text, borrowed (not copied) for diagnostics. Passing
+ * NULL disables the caret snippet, which is what the token/AST dumps do. */
+void set_source_text(const char *text);
 void report_error(int line, int col, const char *fmt, ...);
 int error_count(void);
 void error_reset(void);
@@ -55,6 +58,11 @@ void type_describe(const Type *t, char *buf, size_t size);
  * unoptimized path is always exactly the pre-Phase-5 compiler, which is what
  * makes an optimizer bug bisectable instead of mysterious. */
 extern int g_optimize;
+
+/* Phase 7: set by --sign. When on, codegen puts one provenance string in the
+ * program's read-only data so the linked binary can be traced back to this
+ * compiler. */
+extern int g_sign;
 
 /* Shared nesting limit: the parser stops descending past this depth and the
  * code generator refuses to push past it, so no input can corrupt either

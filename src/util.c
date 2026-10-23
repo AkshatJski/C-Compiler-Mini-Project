@@ -9,8 +9,82 @@ static int g_warning_count = 0;
 static int g_warnings_enabled = 1;
 static const char *g_source_path = NULL;
 
+/* Phase 6: the source text itself, so a diagnostic can quote the offending
+ * line and point at the column instead of asking the reader to count. Set by
+ * main() after the file is read; the buffer outlives every diagnostic. */
+static const char *g_source_text = NULL;
+
 /* Phase 5: on by default, cleared by --no-opt. */
 int g_optimize = 1;
+
+/* Phase 7: --sign stamps each program with a provenance string so the built
+ * binary can prove which compiler produced it (`strings prog.exe | grep mycc`).
+ * Off by default: a compiler should not put bytes in a program unless asked. */
+int g_sign = 0;
+
+void set_source_text(const char *text)
+{
+    g_source_text = text;
+}
+
+/* Prints
+ *       3 |     int x = ;
+ *         |             ^
+ * under a diagnostic. Deliberately conservative:
+ *  - a line longer than the terminal is clipped, because a wrapped line makes
+ *    the caret point at the wrong thing;
+ *  - tabs are passed through on both rows so they stay aligned as long as the
+ *    reader's tab width is the same for both;
+ *  - a column past the end of the line puts the caret at the end rather than
+ *    past it;
+ *  - no source text (a synthesised node, line 0) prints nothing. */
+static void print_snippet(int line, int col)
+{
+    if (g_source_text == NULL || line <= 0)
+    {
+        return;
+    }
+
+    const char *p = g_source_text;
+    int current = 1;
+    while (current < line && *p != '\0')
+    {
+        if (*p == '\n')
+        {
+            current++;
+        }
+        p++;
+    }
+    if (current != line)
+    {
+        return; /* line number past the end of the file */
+    }
+
+    const char *end = p;
+    while (*end != '\0' && *end != '\n' && *end != '\r')
+    {
+        end++;
+    }
+    int len = (int)(end - p);
+    int shown = len > 78 ? 78 : len;
+
+    fprintf(stderr, "  %4d | %.*s\n", line, shown, p);
+    fprintf(stderr, "       | ");
+    int caret = col;
+    if (caret < 1)
+    {
+        caret = 1;
+    }
+    if (caret > shown)
+    {
+        caret = shown > 0 ? shown : 1;
+    }
+    for (int i = 1; i < caret; i++)
+    {
+        fputc(p[i - 1] == '\t' ? '\t' : ' ', stderr);
+    }
+    fprintf(stderr, "^\n");
+}
 
 ASTNode *ast_node(ASTNodeType type, int line, int col)
 {
@@ -88,6 +162,7 @@ void report_error(int line, int col, const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
+    print_snippet(line, col);
     g_error_count++;
 }
 
@@ -125,6 +200,7 @@ void report_warning(int line, int col, const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
+    print_snippet(line, col);
     g_warning_count++;
 }
 
