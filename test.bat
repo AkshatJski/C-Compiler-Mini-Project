@@ -24,6 +24,8 @@ set FAILED=0
 
 for %%t in (tests\*.c) do call :positive "%%t"
 for %%t in (tests\errors\*.c) do call :error "%%t"
+call :output_file_contract
+call :silence_contract
 
 if "%FAILED%"=="1" (
     echo.
@@ -49,11 +51,32 @@ if "%EXPECTED%"=="" (
     goto :eof
 )
 
-mycc.exe --target=windows "%T%" -o "build\%~n1.s"
+mycc.exe --target=windows "%T%" -o "build\%~n1.s" > "build\%~n1.warn" 2>&1
 if errorlevel 1 (
     echo FAIL: compile %T%
     set FAILED=1
     goto :eof
+)
+
+rem Optional `// WARN: <text>` marker: the compile must succeed *and* emit that
+rem warning text (BUG-016). Warnings never change the exit status.
+set "WANTWARN="
+for /f "tokens=1,* delims=:" %%a in ('findstr /c:"WARN:" "%T%"') do (
+    if not defined WANTWARN set "WANTWARN=%%b"
+    goto :positive_warn_trim
+)
+:positive_warn_trim
+if "!WANTWARN:~0,1!"==" " (
+    set "WANTWARN=!WANTWARN:~1!"
+    goto :positive_warn_trim
+)
+if defined WANTWARN (
+    findstr /c:"!WANTWARN!" "build\%~n1.warn" >nul 2>&1
+    if errorlevel 1 (
+        echo FAIL: %T% missing warning "!WANTWARN!"
+        set FAILED=1
+        goto :eof
+    )
 )
 
 %CC% -o "build\%~n1.exe" "build\%~n1.s"
@@ -103,4 +126,35 @@ if defined EXPECTED (
     )
 )
 echo PASS: %T% ^(rejected^)
+goto :eof
+
+rem BUG-017: a compile that fails must not leave an output file behind, and an
+rem existing .s from a previous successful build must survive a failed rebuild.
+:output_file_contract
+if exist "build\contract.s" del "build\contract.s" >nul 2>&1
+mycc.exe tests\errors\undeclared.c -o "build\contract.s" >nul 2>&1
+if exist "build\contract.s" (
+    echo FAIL: BUG-017 a failed compile left build\contract.s behind
+    set FAILED=1
+    goto :eof
+)
+echo PASS: failed compile leaves no output file
+goto :eof
+
+rem -w silences the warning channel only: the compile still succeeds and the
+rem diagnostic text disappears (BUG-016).
+:silence_contract
+mycc.exe -w tests\25_fall_off_end.c -o "build\silent.s" > "build\silent.out" 2>&1
+if errorlevel 1 (
+    echo FAIL: -w turned a valid compile into a failure
+    set FAILED=1
+    goto :eof
+)
+findstr /c:"warning:" "build\silent.out" >nul 2>&1
+if not errorlevel 1 (
+    echo FAIL: -w did not silence the warning channel
+    set FAILED=1
+    goto :eof
+)
+echo PASS: -w silences warnings without failing the build
 goto :eof

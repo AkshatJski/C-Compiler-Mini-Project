@@ -12,7 +12,8 @@
 static void usage(void)
 {
     fprintf(stderr,
-            "Usage: mycc <source.c> [-o <output.s>] [--target=linux|windows]\n");
+            "Usage: mycc <source.c> [-o <output.s>] "
+            "[--target=linux|windows|darwin] [-w]\n");
     fprintf(stderr,
             "  Compiles a C-subset program to AMD64 AT&T assembly.\n");
     fprintf(stderr,
@@ -23,6 +24,9 @@ static void usage(void)
             "  --dump-tokens  print the token stream, then stop\n");
     fprintf(stderr,
             "  --dump-ast     print the syntax tree (after checks), then stop\n");
+    fprintf(stderr,
+            "  -w             suppress warnings (they never affect the exit "
+            "status)\n");
 }
 
 static char *read_file(const char *path)
@@ -57,12 +61,17 @@ int main(int argc, char **argv)
 {
     const char *source_path = NULL;
     const char *output_path = NULL;
-    int windows_target = 0;
+    /* The host's native object format is the sensible default; --target
+     * overrides it for cross-compiling the assembly text. */
+#if defined(_WIN32)
+    TargetKind target_kind = TARGET_WINDOWS;
+#elif defined(__APPLE__)
+    TargetKind target_kind = TARGET_DARWIN;
+#else
+    TargetKind target_kind = TARGET_LINUX;
+#endif
     int dump_tokens_flag = 0;
     int dump_ast_flag = 0;
-#ifdef _WIN32
-    windows_target = 1;
-#endif
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
@@ -76,15 +85,23 @@ int main(int argc, char **argv)
             dump_tokens_flag = 1;
         } else if (strcmp(argv[i], "--dump-ast") == 0) {
             dump_ast_flag = 1;
+        } else if (strcmp(argv[i], "-w") == 0) {
+            /* Warnings are advisory; this only silences the channel, it never
+             * changes the exit status. */
+            set_warnings_enabled(0);
         } else if (strncmp(argv[i], "--target=", 9) == 0) {
-            const char *target = argv[i] + 9;
-            if (strcmp(target, "linux") == 0) {
-                windows_target = 0;
-            } else if (strcmp(target, "windows") == 0) {
-                windows_target = 1;
+            const char *target_name = argv[i] + 9;
+            if (strcmp(target_name, "linux") == 0) {
+                target_kind = TARGET_LINUX;
+            } else if (strcmp(target_name, "windows") == 0) {
+                target_kind = TARGET_WINDOWS;
+            } else if (strcmp(target_name, "darwin") == 0) {
+                target_kind = TARGET_DARWIN;
             } else {
-                fprintf(stderr, "error: unknown target '%s' (use linux or windows)\n",
-                        target);
+                fprintf(stderr,
+                        "error: unknown target '%s' "
+                        "(use linux, windows or darwin)\n",
+                        target_name);
                 usage();
                 return 1;
             }
@@ -143,31 +160,59 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Write to a temporary file and rename it into place only after the whole
+     * translation unit has been generated. A failure part-way through then
+     * leaves no .s behind, and an existing .s from a previous build is not
+     * truncated by a compile that fails (BUG-017). */
     FILE *out = stdout;
+    char *tmp_path = NULL;
     int close_out = 0;
     if (output_path != NULL) {
-        out = fopen(output_path, "w");
+        size_t n = strlen(output_path) + sizeof(".mycc-tmp");
+        tmp_path = xmalloc(n);
+        snprintf(tmp_path, n, "%s.mycc-tmp", output_path);
+        out = fopen(tmp_path, "w");
         if (out == NULL) {
-            fprintf(stderr, "error: cannot open output file '%s'\n", output_path);
+            fprintf(stderr, "error: cannot open output file '%s'\n", tmp_path);
+            free(tmp_path);
             free(source);
             return 1;
         }
         close_out = 1;
     }
 
-    if (codegen_generate(ast, out, windows_target) != 0) {
+    if (codegen_generate(ast, out, target_kind) != 0) {
         fprintf(stderr, "%s: compilation aborted during code generation\n",
                 source_path);
         if (close_out) {
             fclose(out);
+            remove(tmp_path);
         }
+        free(tmp_path);
         free(source);
         return 1;
     }
 
     if (close_out) {
-        fclose(out);
+        int failed = (fflush(out) != 0); /* catch a full disk */
+        if (fclose(out) != 0) {
+            failed = 1;
+        }
+        if (!failed && rename(tmp_path, output_path) != 0) {
+            /* Windows refuses to replace an existing file with rename(). */
+            remove(output_path);
+            failed = (rename(tmp_path, output_path) != 0);
+        }
+        if (failed) {
+            fprintf(stderr, "error: cannot write output file '%s'\n",
+                    output_path);
+            remove(tmp_path);
+            free(tmp_path);
+            free(source);
+            return 1;
+        }
     }
+    free(tmp_path);
     free(source);
     return 0;
 }

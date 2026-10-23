@@ -9,7 +9,37 @@ typedef struct
     int *frame;
     int loop_depth;
     int switch_depth;
+    /* Return type of the function being checked, so `return expr;` can be
+     * compared against it (BUG-019). */
+    Type *ret_type;
 } CheckCtx;
+
+/* Inserts the `index * sizeof(*ptr)` multiplication that pointer arithmetic
+ * needs, so codegen can emit a plain integer add. Called from the ordinary
+ * binary case and from the compound-assignment case; each caller reaches a
+ * given node exactly once, so the rewrite can never be applied twice
+ * (BUG-020). */
+static void scale_index_operand(ASTNode *binop, Type *ptr_type)
+{
+    int scale = (ptr_type->base != NULL && ptr_type->base->size > 0)
+                    ? ptr_type->base->size
+                    : 8;
+    if (scale <= 1)
+    {
+        return;
+    }
+    ASTNode *mul = xcalloc(1, sizeof(ASTNode));
+    mul->type = AST_BINARY_OP;
+    mul->op = OP_MUL;
+    mul->val_type = type_int();
+    mul->left = binop->right;
+    ASTNode *sc = xcalloc(1, sizeof(ASTNode));
+    sc->type = AST_INT_LIT;
+    sc->value = scale;
+    sc->val_type = type_int();
+    mul->right = sc;
+    binop->right = mul;
+}
 
 static void sem_decl_pass(ASTNode *prog);
 static void check_function(ASTNode *fn);
@@ -24,6 +54,109 @@ static int count_params(ASTNode *fn);
 static int count_args(ASTNode *call);
 static int fold_const(ASTNode *node, long long *out);
 static void check_object_complete(ASTNode *decl);
+static int types_compatible(const Type *to, const Type *from, ASTNode *rhs);
+static int same_type(const Type *a, const Type *b);
+static int stmt_terminates(ASTNode *stmt);
+static int list_terminates(ASTNode *stmt);
+
+/* ------------------------------------------------------------------ */
+/* Type compatibility                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Structural identity, needed because type_ptr() returns a fresh object on
+ * every call: `int *` written twice must still compare equal. */
+static int same_type(const Type *a, const Type *b)
+{
+    if (a == b)
+    {
+        return 1;
+    }
+    if (a == NULL || b == NULL || a->kind != b->kind)
+    {
+        return 0;
+    }
+    switch (a->kind)
+    {
+    case TYPE_INT:
+    case TYPE_CHAR:
+        return a->is_unsigned == b->is_unsigned;
+    case TYPE_VOID:
+        return 1;
+    case TYPE_PTR:
+        return same_type(a->base, b->base);
+    case TYPE_ARRAY:
+        return a->array_size == b->array_size && same_type(a->base, b->base);
+    case TYPE_STRUCT:
+        if (a->struct_tag != NULL && b->struct_tag != NULL)
+        {
+            return strcmp(a->struct_tag, b->struct_tag) == 0;
+        }
+        return a->members == b->members;
+    }
+    return 0;
+}
+
+/* Is `rhs` the null pointer constant (a constant expression that folds to 0)?
+ * C allows `p = 0;` and nothing else implicit between integers and pointers. */
+static int is_null_constant(ASTNode *rhs)
+{
+    if (rhs == NULL)
+    {
+        return 0;
+    }
+    long long v;
+    return fold_const(rhs, &v) && v == 0;
+}
+
+/* One predicate for the three places a value is converted: assignment,
+ * argument passing and `return`. Deliberately permissive for scalar-to-scalar
+ * (narrowing is legal C, and `int` is 64-bit here) and strict for the cases
+ * that would otherwise reinterpret bytes: aggregate<->scalar and
+ * pointer<->integer. A cast is the explicit opt-in for the latter (BUG-006),
+ * because by the time the check runs the cast has already produced the
+ * target type. */
+static int types_compatible(const Type *to, const Type *from, ASTNode *rhs)
+{
+    if (to == NULL || from == NULL)
+    {
+        return 1; /* an earlier error already left a type unknown */
+    }
+    if (to->kind == TYPE_VOID || from->kind == TYPE_VOID)
+    {
+        /* A void value never reaches here as a real conversion: check_value()
+         * already rejects `f()` from a void function. Stay quiet rather than
+         * piling a second error on the same expression. */
+        return 1;
+    }
+    if (from->kind == TYPE_ARRAY)
+    {
+        /* Array-to-pointer decay: `int row[4]` becomes `int *` in every
+         * conversion context (initializer, argument, return value). The
+         * semantic layer keeps the array type on the node because codegen uses
+         * it to avoid loading through the address. */
+        return to->kind == TYPE_PTR;
+    }
+    if (to->kind == TYPE_PTR)
+    {
+        if (from->kind == TYPE_PTR)
+        {
+            /* Any pointer to any pointer object pointer: `int *` to `char *`
+             * is a warning in C, not an error, and is how such casts are
+             * written before casts existed. */
+            return 1;
+        }
+        return is_null_constant(rhs);
+    }
+    if (to->kind == TYPE_INT || to->kind == TYPE_CHAR)
+    {
+        return from->kind == TYPE_INT || from->kind == TYPE_CHAR;
+    }
+    if (to->kind == TYPE_STRUCT)
+    {
+        return from->kind == TYPE_STRUCT && same_type(to, from);
+    }
+    return 1;
+}
 
 /* ------------------------------------------------------------------ */
 /* Constant folding                                                   */
@@ -145,6 +278,10 @@ static int fold_const(ASTNode *node, long long *out)
     case OP_GE:
         *out = l >= r;
         return 1;
+    case OP_COMMA:
+        /* `(a, b)` is not a constant expression: the left side exists for its
+         * side effects. */
+        return 0;
     }
     return 0;
 }
@@ -186,6 +323,37 @@ static void sem_decl_pass(ASTNode *prog)
                              d->name, params);
             }
 
+            /* `main` is special: the C runtime passes argc/argv in registers
+             * chosen by the platform ABI. mycc reads parameters from the SysV
+             * registers only, so on Windows a parameterised main would read
+             * whatever happened to be in %rdi. Rejecting it turns silent
+             * garbage into a one-line fix (BUG-014). */
+            if (strcmp(d->name, "main") == 0 && params > 0)
+            {
+                report_error(d->line, d->col,
+                             "'main' must take no parameters; declare it as "
+                             "'int main(void)'");
+            }
+
+            /* Passing a struct by value needs a hidden-pointer ABI (or a
+             * per-argument copy) that mycc does not have. Say so here, where
+             * the parameter and its name are still at hand, instead of
+             * emitting a call that copies 8 bytes of a 16-byte struct
+             * (BUG-004). */
+            for (ASTNode *p = d->left; p != NULL; p = p->next)
+            {
+                if (p->val_type != NULL && p->val_type->kind == TYPE_STRUCT)
+                {
+                    char tbuf[TYPE_DESCRIBE_MAX];
+                    type_describe(p->val_type, tbuf, sizeof(tbuf));
+                    report_error(p->line, p->col,
+                                 "parameter '%s' has type '%s' (by value), "
+                                 "which mycc does not support; pass a pointer "
+                                 "instead ('%s *%s')",
+                                 p->name, tbuf, tbuf, p->name);
+                }
+            }
+
             if (existing != NULL)
             {
                 if (!existing->is_function)
@@ -212,12 +380,20 @@ static void sem_decl_pass(ASTNode *prog)
                     }
                     existing->is_defined = 1;
                 }
+                /* A prototype seen first has no parameter list to compare
+                 * against later; remember the definition's so argument types
+                 * can be checked at call sites (BUG-019). */
+                if (existing->param_list == NULL)
+                {
+                    existing->param_list = d->left;
+                }
             }
             else
             {
                 Symbol *sym = symbol_insert(d->name, d->val_type, 1);
                 sym->is_function = 1;
                 sym->param_count = params;
+                sym->param_list = d->left;
                 sym->is_defined = (d->body != NULL) ? 1 : 0;
             }
         }
@@ -291,6 +467,18 @@ static void check_call(ASTNode *call)
     }
     call->vtype = sym->type->kind;
     call->val_type = sym->type;
+
+    /* Remember that this callee is actually used: a prototype that is called
+     * but never defined has no body to link against, and reporting it here
+     * (at the call site, in the user's file) is far more useful than a linker
+     * error naming a temporary .s file (BUG-015). */
+    if (!sym->is_called)
+    {
+        sym->is_called = 1;
+        sym->call_line = call->line;
+        sym->call_col = call->col;
+    }
+
     int argc = count_args(call);
     if (argc != sym->param_count)
     {
@@ -298,9 +486,26 @@ static void check_call(ASTNode *call)
                      "function '%s' expects %d argument(s), got %d",
                      call->name, sym->param_count, argc);
     }
+
+    ASTNode *param = sym->param_list;
     for (ASTNode *a = call->args; a != NULL; a = a->next)
     {
         check_value(a);
+        if (param != NULL && !types_compatible(param->val_type, a->val_type, a))
+        {
+            char tbuf[TYPE_DESCRIBE_MAX];
+            char fbuf[TYPE_DESCRIBE_MAX];
+            type_describe(param->val_type, tbuf, sizeof(tbuf));
+            type_describe(a->val_type, fbuf, sizeof(fbuf));
+            report_error(a->line, a->col,
+                         "passing '%s' to parameter '%s' of '%s' (expected "
+                         "'%s')",
+                         fbuf, param->name, call->name, tbuf);
+        }
+        if (param != NULL)
+        {
+            param = param->next;
+        }
     }
 }
 
@@ -384,21 +589,7 @@ static void check_expr(ASTNode *expr)
         {
             if (type_is_pointer(expr->left->val_type) && type_is_integer(expr->right->val_type))
             {
-                int scale = expr->left->val_type->base ? expr->left->val_type->base->size : 8;
-                if (scale > 1)
-                {
-                    ASTNode *mul = xcalloc(1, sizeof(ASTNode));
-                    mul->type = AST_BINARY_OP;
-                    mul->op = OP_MUL;
-                    mul->val_type = type_int();
-                    mul->left = expr->right;
-                    ASTNode *sc = xcalloc(1, sizeof(ASTNode));
-                    sc->type = AST_INT_LIT;
-                    sc->value = scale;
-                    sc->val_type = type_int();
-                    mul->right = sc;
-                    expr->right = mul;
-                }
+                scale_index_operand(expr, expr->left->val_type);
                 expr->val_type = expr->left->val_type;
                 expr->vtype = expr->left->vtype;
             }
@@ -432,21 +623,7 @@ static void check_expr(ASTNode *expr)
         {
             if (type_is_pointer(expr->left->val_type) && type_is_integer(expr->right->val_type))
             {
-                int scale = expr->left->val_type->base ? expr->left->val_type->base->size : 8;
-                if (scale > 1)
-                {
-                    ASTNode *mul = xcalloc(1, sizeof(ASTNode));
-                    mul->type = AST_BINARY_OP;
-                    mul->op = OP_MUL;
-                    mul->val_type = type_int();
-                    mul->left = expr->right;
-                    ASTNode *sc = xcalloc(1, sizeof(ASTNode));
-                    sc->type = AST_INT_LIT;
-                    sc->value = scale;
-                    sc->val_type = type_int();
-                    mul->right = sc;
-                    expr->right = mul;
-                }
+                scale_index_operand(expr, expr->left->val_type);
                 expr->val_type = expr->left->val_type;
                 expr->vtype = expr->left->vtype;
             }
@@ -488,6 +665,12 @@ static void check_expr(ASTNode *expr)
                 expr->vtype = TYPE_INT;
             }
         }
+        else if (expr->op == OP_COMMA)
+        {
+            /* `a, b` evaluates `a` for its side effects and yields `b`. */
+            expr->val_type = expr->right->val_type;
+            expr->vtype = expr->right->vtype;
+        }
         else
         {
             /* Simplified usual arithmetic conversions: the result is
@@ -500,6 +683,16 @@ static void check_expr(ASTNode *expr)
                                  ? type_uint()
                                  : type_int();
             expr->vtype = TYPE_INT;
+        }
+        break;
+    case AST_CAST:
+        /* The parser already recorded the target type. A cast is exactly the
+         * explicit opt-in for otherwise-incompatible conversions, so only the
+         * operand still needs checking (BUG-006). */
+        check_value(expr->left);
+        if (expr->val_type != NULL)
+        {
+            expr->vtype = expr->val_type->kind;
         }
         break;
     case AST_TERNARY:
@@ -532,7 +725,61 @@ static void check_expr(ASTNode *expr)
             report_error(expr->line, expr->col,
                          "cannot assign to an array");
         }
-        check_value(expr->right);
+        /* `x op= e` arrives as `x = x op e` with one shared node for `x`.
+         * That node was just checked (and may have been rewritten by the
+         * pointer-index scaling above), so walking the whole binop again would
+         * scale the index a second time -- `a[i] += 1` used to address
+         * a[i*64]. Check only the right operand and type the operation here
+         * (BUG-020). */
+        if (expr->right->type == AST_BINARY_OP &&
+            expr->right->left == expr->left)
+        {
+            ASTNode *binop = expr->right;
+            check_value(binop->right);
+            Type *ltype = binop->left->val_type;
+            Type *rtype = binop->right->val_type;
+            if ((binop->op == OP_ADD || binop->op == OP_SUB) &&
+                type_is_pointer(ltype) && type_is_integer(rtype))
+            {
+                scale_index_operand(binop, ltype);
+                binop->val_type = ltype;
+                binop->vtype = ltype->kind;
+            }
+            else if (binop->op == OP_SUB && type_is_pointer(ltype) &&
+                     type_is_pointer(rtype))
+            {
+                /* `p -= q` is a difference in elements, not in bytes. */
+                binop->val_type = type_int();
+                binop->vtype = TYPE_INT;
+            }
+            else
+            {
+                binop->val_type = binary_is_unsigned(ltype, rtype) ? type_uint()
+                                                                   : type_int();
+                binop->vtype = TYPE_INT;
+            }
+        }
+        else
+        {
+            check_value(expr->right);
+        }
+        /* `struct P a; struct P b; a = b;` is a byte copy and legal C.
+         * Anything else that would reinterpret bytes -- struct to int, int to
+         * pointer -- is now reported instead of silently copying 8 bytes
+         * (BUG-019). The `0` literal stays valid as the null pointer. */
+        if (expr->left->val_type != NULL &&
+            expr->left->val_type->kind != TYPE_ARRAY &&
+            !types_compatible(expr->left->val_type, expr->right->val_type,
+                              expr->right))
+        {
+            char tbuf[TYPE_DESCRIBE_MAX];
+            char fbuf[TYPE_DESCRIBE_MAX];
+            type_describe(expr->left->val_type, tbuf, sizeof(tbuf));
+            type_describe(expr->right->val_type, fbuf, sizeof(fbuf));
+            report_error(expr->line, expr->col,
+                         "assignment to '%s' from incompatible type '%s'", tbuf,
+                         fbuf);
+        }
         expr->val_type = expr->left->val_type;
         expr->vtype = expr->left->vtype;
         break;
@@ -559,6 +806,13 @@ static void check_expr(ASTNode *expr)
         {
             report_error(expr->line, expr->col,
                          "'++'/'--' cannot be applied to an array");
+        }
+        else if (expr->left->val_type != NULL &&
+                 expr->left->val_type->kind == TYPE_STRUCT)
+        {
+            /* Incrementing a struct would add 1 to its first 8 bytes. */
+            report_error(expr->line, expr->col,
+                         "'++'/'--' cannot be applied to a struct");
         }
         expr->val_type = expr->left->val_type;
         expr->vtype = expr->left->vtype;
@@ -708,6 +962,7 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
         case AST_POSTFIX:
         case AST_ADDR_OF:
         case AST_DEREF:
+        case AST_CAST:
         case AST_MEMBER_ACCESS:
             check_expr(n);
             break;
@@ -722,6 +977,19 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
             {
                 report_error(n->line, n->col,
                              "cannot return an aggregate by value");
+            }
+            else if (n->left != NULL && ctx->ret_type != NULL &&
+                     !types_compatible(ctx->ret_type, n->left->val_type,
+                                       n->left))
+            {
+                char tbuf[TYPE_DESCRIBE_MAX];
+                char fbuf[TYPE_DESCRIBE_MAX];
+                type_describe(ctx->ret_type, tbuf, sizeof(tbuf));
+                type_describe(n->left->val_type, fbuf, sizeof(fbuf));
+                report_error(n->line, n->col,
+                             "returning '%s' from a function with result type "
+                             "'%s'",
+                             fbuf, tbuf);
             }
             break;
         case AST_IF:
@@ -791,6 +1059,125 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Fall-through analysis (BUG-016)                                     */
+/* ------------------------------------------------------------------ */
+
+/* Does a `default:` label appear in this switch body? Nested switches own
+ * their own defaults, so the scan stops at AST_SWITCH. */
+static int has_default_label(ASTNode *stmt)
+{
+    for (ASTNode *n = stmt; n != NULL; n = n->next)
+    {
+        if (n->type == AST_DEFAULT)
+        {
+            return 1;
+        }
+        if (n->type == AST_SWITCH)
+        {
+            continue;
+        }
+        if ((n->type == AST_BLOCK || n->type == AST_IF ||
+             n->type == AST_WHILE || n->type == AST_DO_WHILE ||
+             n->type == AST_FOR) &&
+            has_default_label(n->body))
+        {
+            return 1;
+        }
+        if (n->type == AST_IF && has_default_label(n->right))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static ASTNode *last_in_list(ASTNode *stmt)
+{
+    if (stmt == NULL)
+    {
+        return NULL;
+    }
+    while (stmt->next != NULL)
+    {
+        stmt = stmt->next;
+    }
+    return stmt;
+}
+
+/* Does control *never* reach the end of this statement?
+ *
+ * This only decides whether to warn about a missing `return`, so it is
+ * deliberately conservative: when uncertain it answers 0, which suppresses
+ * the warning. A missed warning is a non-event; a bogus one on correct code
+ * would train users to ignore the channel. */
+static int stmt_terminates(ASTNode *stmt)
+{
+    if (stmt == NULL)
+    {
+        return 0;
+    }
+    switch (stmt->type)
+    {
+    case AST_RETURN:
+        return 1;
+    case AST_BLOCK:
+        return list_terminates(stmt->body);
+    case AST_IF:
+        /* Both arms must terminate: without an `else` there is always a path
+         * that skips the `then` branch. */
+        return stmt->right != NULL && stmt_terminates(stmt->body) &&
+               stmt_terminates(stmt->right);
+    case AST_WHILE:
+    case AST_FOR:
+    {
+        /* An endless loop never reaches the statement after it. Only a missing
+         * condition (`for (;;)`) or a constant non-zero one counts; a `break`
+         * inside is missed, which errs towards silence. */
+        if (stmt->cond == NULL)
+        {
+            return 1;
+        }
+        long long v;
+        return fold_const(stmt->cond, &v) && v != 0;
+    }
+    case AST_DO_WHILE:
+    {
+        long long v;
+        return stmt_terminates(stmt->body) ||
+               (fold_const(stmt->cond, &v) && v != 0);
+    }
+    case AST_SWITCH:
+    {
+        /* Without a `default:` an unmatched value skips every case, so the
+         * switch always falls through. With one, the last case region decides:
+         * if it ends in a return, no path reaches the closing brace. */
+        ASTNode *body = stmt->body;
+        ASTNode *list = (body != NULL && body->type == AST_BLOCK) ? body->body
+                                                                  : body;
+        ASTNode *last = last_in_list(list);
+        return has_default_label(list) &&
+               (last != NULL && last->type == AST_RETURN);
+    }
+    default:
+        return 0;
+    }
+}
+
+/* A statement list terminates when any of its statements does; everything
+ * after such a statement is unreachable. */
+static int list_terminates(ASTNode *stmt)
+{
+    for (ASTNode *n = stmt; n != NULL; n = n->next)
+    {
+        if (stmt_terminates(n))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void check_function(ASTNode *fn)
 {
     scope_push();
@@ -800,6 +1187,7 @@ static void check_function(ASTNode *fn)
     ctx.frame = &frame;
     ctx.loop_depth = 0;
     ctx.switch_depth = 0;
+    ctx.ret_type = fn->val_type;
     for (ASTNode *p = fn->left; p != NULL; p = p->next)
     {
         if (symbol_lookup_current(p->name) != NULL)
@@ -814,6 +1202,19 @@ static void check_function(ASTNode *fn)
     }
     check_stmt(fn->body, &ctx);
     check_returns(fn, fn->body);
+
+    /* Reaching the closing brace of a non-void function is undefined in C;
+     * mycc quietly returned 0, which turns "I forgot a return" into a
+     * mysterious wrong answer at run time. `main` is exempt because the
+     * standard gives it an implicit `return 0` (BUG-016). */
+    if (fn->vtype != TYPE_VOID && strcmp(fn->name, "main") != 0 &&
+        !(fn->body != NULL && stmt_terminates(fn->body)))
+    {
+        report_warning(fn->line, fn->col,
+                       "control reaches end of non-void function '%s'",
+                       fn->name);
+    }
+
     fn->frame_size = frame;
     scope_pop();
 }
@@ -884,6 +1285,26 @@ int semantic_analyze(ASTNode *root)
     if (!have_main)
     {
         report_error(0, 0, "no 'main' function defined");
+    }
+
+    /* A prototype that is called but never defined would fail at link time
+     * with a message naming a temporary .s file. Report it here, at the call
+     * site, while the user's own source coordinates still mean something
+     * (BUG-015). Unused prototypes stay legal -- they are how a file declares
+     * what it expects a library to provide. */
+    for (ASTNode *d = root->body; d != NULL; d = d->next)
+    {
+        if (d->type != AST_FUNC_DECL)
+        {
+            continue;
+        }
+        Symbol *sym = symbol_lookup(d->name);
+        if (sym != NULL && sym->is_function && sym->is_called &&
+            !sym->is_defined)
+        {
+            report_error(sym->call_line, sym->call_col,
+                         "function '%s' is declared but never defined", d->name);
+        }
     }
     return error_count() > 0 ? 1 : 0;
 }

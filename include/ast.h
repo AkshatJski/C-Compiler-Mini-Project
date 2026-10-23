@@ -29,7 +29,9 @@ typedef enum {
     /* Phase 3 additions */
     AST_ADDR_OF,
     AST_DEREF,
-    AST_MEMBER_ACCESS
+    AST_MEMBER_ACCESS,
+    /* Phase 5 / bug-fix additions */
+    AST_CAST
 } ASTNodeType;
 
 typedef enum {
@@ -50,7 +52,10 @@ typedef enum {
     OP_LT,
     OP_LE,
     OP_GT,
-    OP_GE
+    OP_GE,
+    /* The comma operator: evaluate the left operand for its side effects,
+     * then yield the right operand's value (BUG-007). */
+    OP_COMMA
 } BinaryOp;
 
 typedef enum {

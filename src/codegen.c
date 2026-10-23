@@ -6,7 +6,7 @@
 #include "codegen.h"
 #include "util.h"
 
-#define MAX_NEST 256
+#define MAX_NEST MYCC_MAX_NEST
 
 static const char *const ARG_REGS[6] = {
     "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
@@ -14,7 +14,26 @@ static const char *const ARG_REGS[6] = {
 static FILE *out;
 static int label_counter;
 static int pushed_count;   /* number of 8-byte temporaries currently on %rsp */
-static int target_windows; /* when set, omit ELF-only directives */
+static TargetKind target;  /* selects symbol naming + ELF-only directives */
+
+/* Returns the spelling of an external symbol for the current object format.
+ *
+ * Mach-O (macOS) prefixes every external name with an underscore, so the
+ * symbol the C runtime looks for is `_main`; ELF and COFF use `main`. Every
+ * definition and every reference goes through this one function so that a
+ * single flag covers the whole file. The buffer is file-static and is only
+ * ever consumed immediately by emit_line(), which formats and writes in one
+ * step, and no emitted line names two program symbols. */
+static const char *sym_name(const char *name)
+{
+    static char buf[512];
+    if (target != TARGET_DARWIN)
+    {
+        return name;
+    }
+    snprintf(buf, sizeof(buf), "_%s", name);
+    return buf;
+}
 
 /* Break/continue target stacks. Loops push both; a switch pushes only a
  * break target, so 'continue' inside a switch still finds the loop. Each
@@ -40,6 +59,25 @@ static int continue_sp;
  * belongs to the innermost enclosing switch. */
 static int switch_id[MAX_NEST];
 static int switch_sp;
+
+/* The break/continue/switch stacks are fixed-size arrays. A program nested
+ * deeper than MYCC_MAX_NEST used to write past their end and take the process
+ * down with an access violation (BUG-009). The parser enforces the same limit,
+ * so this is defence in depth: should it ever fire, the diagnostic is clean
+ * and no memory is corrupted. */
+static int ctx_push_ok(void)
+{
+    if (break_sp >= MAX_NEST || continue_sp >= MAX_NEST ||
+        switch_sp >= MAX_NEST)
+    {
+        report_error(0, 0,
+                     "internal error: nesting limit of %d exceeded during "
+                     "code generation (the parser should have caught this)",
+                     MAX_NEST);
+        return 0;
+    }
+    return 1;
+}
 
 static const char *break_label_fmt(CtxKind kind)
 {
@@ -77,6 +115,7 @@ static void gen_expr(ASTNode *node);
 static void gen_addr(ASTNode *node);
 static int gen_stmt(ASTNode *node);
 static int gen_stmt_one(ASTNode *node);
+static void emit_binop(BinaryOp op, int uns);
 
 static void emit_line(const char *fmt, ...)
 {
@@ -113,7 +152,7 @@ static void emit_var_load(ASTNode *node)
     const char *op = load_op_for(node->val_type, is_char);
     if (node->is_global)
     {
-        emit_line("\t%s %s(%%rip), %%rax", op, node->name);
+        emit_line("\t%s %s(%%rip), %%rax", op, sym_name(node->name));
     }
     else
     {
@@ -129,7 +168,7 @@ static void emit_var_store(ASTNode *target)
     const char *mnemonic = is_char ? "movb" : "movq";
     if (target->is_global)
     {
-        emit_line("\t%s %s, %s(%%rip)", mnemonic, reg, target->name);
+        emit_line("\t%s %s, %s(%%rip)", mnemonic, reg, sym_name(target->name));
     }
     else
     {
@@ -176,6 +215,16 @@ static void gen_binary(ASTNode *node)
         return;
     }
 
+    /* The comma operator evaluates its left operand only for its side effects
+     * and yields the right operand, so it cannot go through the
+     * push/pop-and-combine path below (BUG-007). */
+    if (node->op == OP_COMMA)
+    {
+        gen_expr(node->left);
+        gen_expr(node->right);
+        return;
+    }
+
     gen_expr(node->left);
     emit_line("\tpushq %%rax");
     pushed_count++;
@@ -186,9 +235,16 @@ static void gen_binary(ASTNode *node)
     /* Decided from the *operand* types (not the result type) so that div,
      * mod, >> and the ordered comparisons pick the right flavour of x86
      * instruction. Must agree exactly with the folding done in semantic.c. */
-    int uns = binary_is_unsigned(node->left->val_type, node->right->val_type);
+    emit_binop(node->op,
+               binary_is_unsigned(node->left->val_type, node->right->val_type));
+}
 
-    switch (node->op)
+/* Applies one binary operator to %rcx (left) and %rax (right) and leaves the
+ * result in %rax. Split out of gen_binary() so that compound assignment can
+ * reuse it after evaluating its lvalue exactly once (BUG-001). */
+static void emit_binop(BinaryOp op, int uns)
+{
+    switch (op)
     {
     case OP_ADD:
         emit_line("\taddq %%rcx, %%rax");
@@ -219,7 +275,7 @@ static void gen_binary(ASTNode *node)
             emit_line("\tcqto"); /* sign-extend %rax into %rdx:%rax */
             emit_line("\tidivq %%r10");
         }
-        if (node->op == OP_MOD)
+        if (op == OP_MOD)
         {
             emit_line("\tmovq %%rdx, %%rax"); /* %rdx = remainder */
         }
@@ -251,6 +307,8 @@ static void gen_binary(ASTNode *node)
     case OP_AND:
     case OP_OR:
         break; /* handled above */
+    case OP_COMMA:
+        break; /* handled by the callers before operands are pushed */
     case OP_EQ:
         emit_line("\tcmpq %%rax, %%rcx");
         emit_line("\tsete %%al");
@@ -286,14 +344,112 @@ static void gen_binary(ASTNode *node)
     }
 }
 
+/* Emits a store of %rax through `addr_reg`, using the width of `t`. */
+static void emit_store_indirect(const char *addr_reg, const Type *t, int vtype)
+{
+    int is_char = (t != NULL && t->kind == TYPE_CHAR) || vtype == TYPE_CHAR;
+    if (is_char)
+    {
+        emit_line("\tmovb %%al, (%s)", addr_reg);
+    }
+    else
+    {
+        emit_line("\tmovq %%rax, (%s)", addr_reg);
+    }
+}
+
+/* Emits `lvalue op= value` for an lvalue whose address is worth computing only
+ * once. The address is formed, the old value loaded through it, the right
+ * operand evaluated, and the result stored back. Without this,
+ * `a[i++] += 5` evaluated `a[i++]` twice and advanced `i` twice (BUG-001). */
+static void gen_compound_assign(ASTNode *node)
+{
+    ASTNode *target = node->left;
+    ASTNode *binop = node->right;
+    int is_char = (target->val_type != NULL &&
+                   target->val_type->kind == TYPE_CHAR) ||
+                  target->vtype == TYPE_CHAR;
+
+    gen_addr(target); /* %rax = address of the lvalue */
+    emit_line("\tpushq %%rax");
+    pushed_count++;
+
+    emit_line("\tmovq (%%rsp), %%rcx");
+    emit_line("\t%s (%%rcx), %%rax", load_op_for(target->val_type, is_char));
+    emit_line("\tpushq %%rax"); /* keep the old value as the left operand */
+    pushed_count++;
+
+    gen_expr(binop->right); /* %rax = right operand (already scaled if needed) */
+
+    emit_line("\tpopq %%rcx"); /* %rcx = old value */
+    pushed_count--;
+    emit_binop(binop->op, binary_is_unsigned(target->val_type,
+                                             binop->right->val_type));
+
+    emit_line("\tpopq %%rcx"); /* %rcx = address */
+    pushed_count--;
+    emit_store_indirect("%rcx", target->val_type, target->vtype);
+    /* %rax already holds the new value, which is the value of the assignment. */
+}
+
 static void gen_assign(ASTNode *node)
 {
+    /* Struct assignment copies the whole object, not one 8-byte slot.
+     * `rep movsb` needs %rdi (destination), %rsi (source) and %rcx (count);
+     * all three are caller-saved and none holds a live value here. The string
+     * direction flag is clear per the ABI, and nothing in this compiler sets
+     * it (BUG-003). */
+    if (node->left->val_type != NULL &&
+        node->left->val_type->kind == TYPE_STRUCT)
+    {
+        int size = node->left->val_type->size;
+        gen_addr(node->left);
+        emit_line("\tpushq %%rax"); /* destination; also the result value */
+        pushed_count++;
+
+        if (node->right->type == AST_ASSIGN)
+        {
+            /* `c = (b = a)`: an inner struct assignment leaves the address of
+             * its destination in %rax, which is this copy's source. */
+            gen_assign(node->right);
+            emit_line("\tmovq %%rax, %%rsi");
+        }
+        else
+        {
+            gen_addr(node->right);
+            emit_line("\tmovq %%rax, %%rsi");
+        }
+
+        emit_line("\tmovq (%%rsp), %%rdi");
+        emit_line("\tmovq $%d, %%rcx", size);
+        emit_line("\trep movsb");
+        emit_line("\tpopq %%rax");
+        pushed_count--;
+        return;
+    }
+
+    /* `x += e` was desugared by the parser into `x = x + e`, sharing one node
+     * for the lvalue. Generating that expression would evaluate the lvalue
+     * twice; for `a[i++] += 5` that increments `i` twice. Detecting the shape
+     * here keeps the parser and the AST free of a compound-assignment node,
+     * while a hand-written `x = x + 1` has two distinct nodes and is
+     * unaffected. A plain variable is exempt because reading it twice cannot
+     * have a side effect (BUG-001). */
+    if (node->left->type != AST_VAR_REF && node->right->type == AST_BINARY_OP &&
+        node->right->left == node->left && node->right->op != OP_COMMA &&
+        node->right->op != OP_AND && node->right->op != OP_OR)
+    {
+        gen_compound_assign(node);
+        return;
+    }
+
     if (node->left->type == AST_VAR_REF)
     {
         gen_expr(node->right);
         emit_var_store(node->left);
     }
-    else if (node->left->type == AST_DEREF || node->left->type == AST_MEMBER_ACCESS)
+    else if (node->left->type == AST_DEREF ||
+             node->left->type == AST_MEMBER_ACCESS)
     {
         /* Evaluate value and save it */
         gen_expr(node->right);
@@ -308,16 +464,7 @@ static void gen_assign(ASTNode *node)
         emit_line("\tpopq %%rax");
         pushed_count--;
 
-        int is_char = (node->left->val_type && node->left->val_type->kind == TYPE_CHAR) ||
-                      (node->left->vtype == TYPE_CHAR);
-        if (is_char)
-        {
-            emit_line("\tmovb %%al, (%%rcx)");
-        }
-        else
-        {
-            emit_line("\tmovq %%rax, (%%rcx)");
-        }
+        emit_store_indirect("%rcx", node->left->val_type, node->left->vtype);
     }
 }
 
@@ -351,13 +498,24 @@ static void gen_postfix(ASTNode *node)
         return;
     }
 
-    /* Dereference / member lvalue (e.g. (*p)++ or a[i]--): the location is
-     * not a named variable, so store through its computed address. The old
-     * value is kept on the stack as the expression's result, and gen_addr
-     * is called afterward because it clobbers %rax. */
-    gen_expr(node->left);       /* %rax = old value */
-    emit_line("\tpushq %%rax"); /* keep old value for the result */
+    /* Dereference / member lvalue (e.g. (*p)++ or a[i]--): compute the address
+     * once and read-modify-write through it. The old code evaluated the lvalue
+     * first and recomputed its address afterwards, which ran the index
+     * expression twice: `a[i++]--` bumped `i` twice and stored through the
+     * wrong address (BUG-002). */
+    int is_char =
+        (node->left->val_type != NULL &&
+         node->left->val_type->kind == TYPE_CHAR) ||
+        node->left->vtype == TYPE_CHAR;
+
+    gen_addr(node->left);       /* %rax = address of the lvalue */
+    emit_line("\tpushq %%rax"); /* [address] */
     pushed_count++;
+    emit_line("\tmovq (%%rsp), %%rcx");
+    emit_line("\t%s (%%rcx), %%rax", load_op_for(node->left->val_type, is_char));
+    emit_line("\tpushq %%rax"); /* [old value, address] */
+    pushed_count++;
+
     if (node->op == OP_ADD)
     {
         emit_line("\taddq $%d, %%rax", step);
@@ -366,26 +524,13 @@ static void gen_postfix(ASTNode *node)
     {
         emit_line("\tsubq $%d, %%rax", step);
     }
-    emit_line("\tpushq %%rax"); /* stash the new value */
-    pushed_count++;
-    gen_addr(node->left); /* %rax = address of the lvalue */
-    emit_line("\tmovq %%rax, %%rcx");
-    emit_line("\tpopq %%rax"); /* new value */
-    pushed_count--;
 
-    int is_char =
-        (node->left->val_type && node->left->val_type->kind == TYPE_CHAR) ||
-        (node->left->vtype == TYPE_CHAR);
-    if (is_char)
-    {
-        emit_line("\tmovb %%al, (%%rcx)");
-    }
-    else
-    {
-        emit_line("\tmovq %%rax, (%%rcx)");
-    }
+    emit_line("\tmovq 8(%%rsp), %%rcx"); /* %rcx = address; old value stays on top */
+    emit_store_indirect("%rcx", node->left->val_type, node->left->vtype);
 
     emit_line("\tpopq %%rax"); /* result is the old value */
+    pushed_count--;
+    emit_line("\taddq $8, %%rsp"); /* drop the address slot */
     pushed_count--;
 }
 
@@ -438,7 +583,7 @@ static void gen_call(ASTNode *node)
         emit_line("\tpopq %s", ARG_REGS[i]);
         pushed_count--;
     }
-    emit_line("\tcall %s", node->name);
+    emit_line("\tcall %s", sym_name(node->name));
 
     if (padded)
     {
@@ -453,7 +598,7 @@ static void gen_addr(ASTNode *node)
     {
         if (node->is_global)
         {
-            emit_line("\tleaq %s(%%rip), %%rax", node->name);
+            emit_line("\tleaq %s(%%rip), %%rax", sym_name(node->name));
         }
         else
         {
@@ -520,6 +665,18 @@ static void gen_expr(ASTNode *node)
     case AST_BINARY_OP:
         gen_binary(node);
         break;
+    case AST_CAST:
+        /* Values are 64-bit in registers, so only a cast *to* a 1-byte type
+         * changes anything: it must narrow the value the way a store would
+         * (sign- or zero-extend the low byte back into %rax). Casts between
+         * ints, unsigned ints and pointers are no-ops here (BUG-006). */
+        gen_expr(node->left);
+        if (node->val_type != NULL && node->val_type->kind == TYPE_CHAR)
+        {
+            emit_line(node->val_type->is_unsigned ? "\tmovzbq %%al, %%rax"
+                                                  : "\tmovsbq %%al, %%rax");
+        }
+        break;
     case AST_TERNARY:
         gen_ternary(node);
         break;
@@ -573,6 +730,10 @@ static void gen_if(ASTNode *node)
 
 static void gen_while(ASTNode *node)
 {
+    if (!ctx_push_ok())
+    {
+        return;
+    }
     int id = label_counter++;
     break_kind[break_sp] = CTX_WHILE;
     break_id[break_sp++] = id; /* break -> .L_loop_end */
@@ -591,6 +752,10 @@ static void gen_while(ASTNode *node)
 
 static void gen_do_while(ASTNode *node)
 {
+    if (!ctx_push_ok())
+    {
+        return;
+    }
     int id = label_counter++;
     break_kind[break_sp] = CTX_DO;
     break_id[break_sp++] = id; /* break -> .L_do_end */
@@ -609,6 +774,10 @@ static void gen_do_while(ASTNode *node)
 
 static void gen_for(ASTNode *node)
 {
+    if (!ctx_push_ok())
+    {
+        return;
+    }
     int id = label_counter++;
     if (node->left != NULL)
     { /* init */
@@ -639,6 +808,10 @@ static void gen_for(ASTNode *node)
 
 static void gen_switch(ASTNode *node)
 {
+    if (!ctx_push_ok())
+    {
+        return;
+    }
     int id = label_counter++;
 
     /* Case / default labels may be nested inside blocks and nested control
@@ -783,8 +956,8 @@ static void gen_func(ASTNode *fn)
     int aligned_frame = (frame + 15) / 16 * 16;
 
     emit_line(".text");
-    emit_line(".globl %s", fn->name);
-    emit_line("%s:", fn->name);
+    emit_line(".globl %s", sym_name(fn->name));
+    emit_line("%s:", sym_name(fn->name));
     emit_line("\tpushq %%rbp");
     emit_line("\tmovq %%rsp, %%rbp");
     if (aligned_frame > 0)
@@ -830,8 +1003,8 @@ static void gen_data(ASTNode *prog)
     {
         if (d->type == AST_VAR_DECL)
         {
-            emit_line(".globl %s", d->name);
-            emit_line("%s:", d->name);
+            emit_line(".globl %s", sym_name(d->name));
+            emit_line("%s:", sym_name(d->name));
             if (d->val_type != NULL &&
                 (d->val_type->kind == TYPE_ARRAY ||
                  d->val_type->kind == TYPE_STRUCT))
@@ -865,14 +1038,15 @@ static void gen_program(ASTNode *prog)
         }
     }
     /* ELF-only: marks the stack as non-executable on Linux. GNU as on
-     * Windows (COFF/PE) does not understand this directive, so skip it. */
-    if (!target_windows)
+     * Windows (COFF/PE) does not understand this directive, and Mach-O uses
+     * its own section naming, so skip it for both. */
+    if (target != TARGET_WINDOWS && target != TARGET_DARWIN)
     {
         emit_line(".section .note.GNU-stack,\"\",@progbits");
     }
 }
 
-int codegen_generate(ASTNode *root, FILE *output, int windows_target)
+int codegen_generate(ASTNode *root, FILE *output, TargetKind target_kind)
 {
     if (root == NULL || root->type != AST_PROGRAM)
     {
@@ -885,7 +1059,7 @@ int codegen_generate(ASTNode *root, FILE *output, int windows_target)
     break_sp = 0;
     continue_sp = 0;
     switch_sp = 0;
-    target_windows = windows_target;
+    target = target_kind;
     gen_program(root);
     return error_count() > 0 ? 1 : 0;
 }

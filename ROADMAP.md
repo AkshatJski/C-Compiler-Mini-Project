@@ -6,8 +6,23 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 - **[ ]** not started · **[~]** in progress · **[x]** done
 
 > **Status:** Phases 0, 1 (except the `int` width decision and multi-error
-> recovery), Phase 2, and Phase 3 are complete. The suite now has 18 positive
-> tests and 30 error/diagnostic tests.
+> recovery), Phase 2, and Phase 3 are complete. The suite now has 25 positive
+> tests and 41 error/diagnostic tests (68 checks), and every job also runs a
+> differential test that requires mycc and gcc to return the same exit code
+> (`make difftest` / `difftest.bat`).
+>
+> **Correctness sweep (2026-10-23):** a full source review plus ~30 adversarial
+> probes against gcc turned up 21 defects, all of which are now fixed or (one)
+> pending CI. They are logged, with reproductions and fix commits, in the local
+> bug ledger `report.md`. The high-severity class — silently wrong code — is
+> gone: `a[i++] += 5` and `a[i++]++` evaluate their lvalue once, `b = a` copies
+> a whole struct, struct-by-value is rejected instead of miscompiled,
+> `a[i] += 1` no longer double-scales the index, and assignments/calls are
+> type-checked.
+>
+> **Tooling added:** a macOS CI job, a differential test against the host
+> compiler, warnings with a `-w` switch, `--target=darwin`, and crash-proof
+> nesting limits.
 
 ---
 
@@ -15,15 +30,19 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 
 - [x] Git repo + `.gitignore` (build artifacts, object files, editor cruft)
 - [x] Accurate `README.md` + this `ROADMAP.md`
-- [x] CI (GitHub Actions): build + test matrix on Linux (gcc) and Windows
-      (MinGW-w64 / MSYS2), gated on every push
+- [x] CI (GitHub Actions): build + test matrix on Linux (gcc), Windows
+      (MinGW-w64 / MSYS2) and macOS (Apple clang), gated on every push; the
+      Linux job builds with `-Werror`
+- [x] Differential test against the host compiler (`difftest.sh` /
+      `difftest.bat`, also wired into CI) — it closes the gap that let four
+      silently-wrong-code bugs pass a green 48-test suite
 - [x] `make clean` also removes the stale `src/*.o` objects; objects now build
       into a `build/` dir so the source tree stays clean
 - [ ] Decide and document the official calling-convention posture
       (see Phase 4)
 
 **Acceptance:** fresh clone → `build.bat`/`make` → `test.bat`/`make test` green
-on both platforms automatically in CI.
+on all three platforms automatically in CI, with the differential test agreeing.
 
 ---
 
@@ -45,10 +64,36 @@ Make the language match real C semantics more closely without adding syntax.
 - [x] Remove dead code: `scope_depth()`, `Symbol.is_param`,
       `SYMBOL_TYPE_VOID`, `Scope.child` (`xrealloc` was removed with them and
       later brought back as a genuinely-used allocator in this branch)
+- [x] Type-check assignments and calls (`struct → int`, `int → pointer`, and a
+      struct passed as `int` are errors, with casts as the explicit opt-in) —
+      `report.md` BUG-019
+- [x] Evaluate an lvalue with a side effect exactly once (`a[i++] += 5`,
+      `*p++ = 1`, `a[i++]++`) — BUG-001, BUG-002, BUG-020
+- [x] Copy a whole struct on assignment (`b = a`, nested structs included) —
+      BUG-003; and reject struct **by value** parameters/returns instead of
+      silently miscompiling them — BUG-004
+- [x] Reject malformed literals (`08`, `09`, `0x` with no digits) and skip a
+      UTF-8 BOM — BUG-008, BUG-011
+- [x] Never crash on hostile input: nesting depth is capped at 256 levels in
+      the parser and in codegen's break/continue/switch stacks — BUG-009,
+      BUG-010
+- [x] Precise single-error diagnostics for preprocessor directives, string
+      literals and unterminated literals, instead of a character-level error
+      plus a cascade — BUG-012, BUG-013
+- [x] Reject `int main(int argc, char **argv)` (the arguments are garbage on
+      Windows until the Phase-4 ABI split) — BUG-014
+- [x] Report a declared-but-never-defined function at compile time, and a
+      non-`void` function that can fall off its end as a **warning** — BUG-015,
+      BUG-016
+- [x] Leave no output file behind when compilation fails (temp file + rename)
+      — BUG-017
 - [ ] Parse errors recover so more than one error is reported per run
 
-**Acceptance:** existing 5 tests pass; new tests cover `for`-scope shadowing,
-missing `main`, unterminated comment, and multi-error recovery.
+**Acceptance:** the existing suite passes; new tests cover `for`-scope
+shadowing, missing `main`, unterminated comment, assignment compatibility,
+single evaluation of lvalues, whole-struct copy, struct-by-value rejection,
+malformed literals, the BOM, the nesting limits, the diagnostics above, and
+multi-error recovery.
 
 ---
 
@@ -62,7 +107,13 @@ missing `main`, unterminated comment, and multi-error recovery.
 - [x] `else if` spelling naturally (already works via nested `else` + `if`)
 - [x] Conditional `?:` operator, bitwise `& | ^ ~`, shifts `<< >>`, and the
       matching compound assignments
+- [x] Comma operator (`for (…; …; i++, j--)`, `a = (b, c)`) — precedence level
+      added between assignment and the rest; argument lists unaffected
+- [x] Cast expressions (`(int)x`, `(char *)p`, `(struct Node *)0`), including
+      the truncate/extend codegen for narrowing to `char`/`unsigned char`
 - [x] Globals with constant-folded initializers
+- [x] Global **pointer** variables and pointer **return** types
+      (`int *gp;`, `struct Node *make(void)`) — BUG-005
 
 **Acceptance:** `tests/06_control_flow.c`, `tests/07_bitwise.c`,
 `tests/08_literals.c`, `tests/09_types_globals.c`, `tests/10_ternary.c`, and
@@ -81,6 +132,12 @@ diagnostics; all green.
       out so the row stride is right
 - [x] `struct` definitions, member access `.`, plus `->`, nested structs,
       arrays of structs, and self-referential members
+- [x] Whole-struct assignment (`b = a`) via `rep movsb`, sized from the type —
+      BUG-003. Struct-by-value parameters and returns stay **rejected** (a
+      clear message points at the pointer form) rather than half-implemented —
+      BUG-004. Revisit only if a demo needs `struct Point add(struct Point a,
+      struct Point b)`; the honest cheap version is a hidden pointer to a
+      caller-allocated copy, not the SysV classification rules.
 - [x] Function prototypes / forward declarations (formal `param decls`)
 - [x] `unsigned` variants: `unsigned`, `unsigned int`, `unsigned char` (and
       `signed` as the explicit default) — signedness now selects
@@ -89,9 +146,10 @@ diagnostics; all green.
       `unsigned int` is 64-bit, matching the existing 64-bit `int`.
 
 **Acceptance:** `tests/12_pointers.c`, `tests/13_arrays.c`,
-`tests/14_structs.c`, `tests/17_multidim_arrays.c`, and `tests/18_unsigned.c`;
-a real `main` that reads/writes an array and sums it via pointers. This phase
-proves the compiler can host real algorithms.
+`tests/14_structs.c`, `tests/17_multidim_arrays.c`, `tests/18_unsigned.c`,
+`tests/21_global_pointers.c`, `tests/22_struct_assign.c`, and
+`tests/23_lvalue_single_eval.c`; a real `main` that reads/writes an array and
+sums it via pointers. This phase proves the compiler can host real algorithms.
 
 ---
 
@@ -102,10 +160,16 @@ proves the compiler can host real algorithms.
       codes
 - [ ] `--run-io` / runtime library compiled into every program (still a single
       self-contained `.s`)
+- [x] Enforce the interim posture: `main` must be declared `int main(void)`.
+      Until the ABI split below exists, `int main(int argc, char **argv)` gets
+      a clean compile-time rejection instead of an `argc` that is garbage on
+      Windows — BUG-014
 - [ ] Define the official calling convention **now** that external calls exist:
       option A keep the internal 6-register scheme but only call mycc code;
       option B emit the real Microsoft x64 ABI (`rcx/rdx/r8/r9` + 32-byte
-      shadow space) under `--target=windows` — enabling calls into the OS/CRT
+      shadow space) under `--target=windows` — enabling calls into the OS/CRT.
+      Today the emitted calls are the *internal* scheme on all three targets,
+      which is correct only because a mycc program never calls into libc.
 
 **Acceptance:** a hello-world test prints text and returns 0; a program calls
 `printf` on Windows via option B (or is clearly documented as internal-only
@@ -133,12 +197,18 @@ learning example.
 
 - [ ] Source-snippet printing in errors (`prog.c:3:9: error: ...` with the
       offending line and a caret)
-- [ ] Warning flags (unused variable, missing return, constant condition)
+- [~] Warning flags: the channel exists — `report_warning()` writes
+      `<file>:<line>:<col>: warning: <msg>`, never changes the exit status, and
+      `-w` silences it. One warning is emitted so far (control reaches the end
+      of a non-`void` function, BUG-016). Still open: unused variable, unused
+      parameter, constant condition, shadowed declaration
 - [ ] `--interpret`: a tree-walking interpreter that runs the AST
       (mirrors codegen semantics; ideal for teaching and for differential
       fuzzing against the compiled output)
-- [ ] Differential test harness: random program generator feeds the same exit
-      codes through `--interpret`, `--emit-asm`, and real gcc
+- [~] Differential test harness: `difftest.sh` / `difftest.bat` / `make
+      difftest` already compile `tests/diff/*.c` with **mycc** and **gcc** and
+      require identical exit codes, in CI on all three platforms. Still open:
+      the random program generator, and the third oracle (`--interpret`)
 
 **Acceptance:** a fuzz run of N=10,000 generated programs finds zero
 interpreter-vs-codegen mismatches (a strong correctness proof).
@@ -160,8 +230,19 @@ interpreter-vs-codegen mismatches (a strong correctness proof).
 ## How work flows
 
 1. Each feature adds a self-checking test first (`tests/NN_feature.c` with an
-   `EXPECT:` marker), which fails before the change and passes after.
-2. Cross-platform check: Linux (`make test`) and Windows (`test.bat`) both
-   green before the phase is marked done.
-3. Tour narration (`tour.bat` / `tour2.bat`) is updated only when it stops
+   `EXPECT:` marker), which fails before the change and passes after. Rejection
+   behaviour goes in `tests/errors/CODE.c` with an `EXPECT-ERROR:` marker
+   naming the diagnostic.
+2. **Bug fixes go through `report.md`** (local-only): the defect is logged with
+   its severity, reproduction, root cause and fix plan *before* the fix, and the
+   entry is re-stamped with the fix commit hash and the regression test after
+   it. Commit messages carry the ID: `fix(BUG-014): require int main(void)`.
+   Nothing is marked `FIXED` without a test that fails before and passes after.
+3. Cross-platform check: Linux (`make test`), Windows (`test.bat`) and macOS CI
+   all green — plus `make difftest`, which is the only check that can tell
+   "plausible" from "correct" (it compares mycc's exit codes against gcc's).
+4. Tour narration (`tour.bat` / `tour2.bat`) is updated only when it stops
    matching reality.
+5. User-facing docs (`README.md`, `instructions.md`, this file) are updated in
+   the same change as the behaviour they describe; the local engineering docs
+   (`decision.md`, `Flow.md`, `learn.md`, `report.md`) are updated the same day.

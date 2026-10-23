@@ -74,6 +74,8 @@ static const char *op_name(int op)
         return ">";
     case OP_GE:
         return ">=";
+    case OP_COMMA:
+        return ",";
     default:
         return "?";
     }
@@ -218,6 +220,9 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_MEMBER_ACCESS:
         fprintf(out, "MEMBER .%s", node->name);
         break;
+    case AST_CAST:
+        fprintf(out, "CAST (%s)", type_name(node->vtype));
+        break;
     }
     fprintf(out, "  [%d:%d]\n", node->line, node->col);
 
@@ -284,6 +289,7 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_POSTFIX:
     case AST_ADDR_OF:
     case AST_DEREF:
+    case AST_CAST:
     case AST_MEMBER_ACCESS:
         dump_node(node->left, d, out);
         break;

@@ -13,6 +13,16 @@ typedef struct Symbol
     int is_function;
     int is_defined;
     int param_count;
+    /* Functions only: the AST_PARAM chain from the declaration, so call sites
+     * can be checked against the parameter types (BUG-019). Points into the
+     * AST, which outlives the symbol table. */
+    ASTNode *param_list;
+    /* Functions only: set when a call site resolves to this symbol. Together
+     * with the first call location this lets the compiler report a function
+     * that was declared and called but never defined (BUG-015). */
+    int is_called;
+    int call_line;
+    int call_col;
     struct Symbol *next;
 } Symbol;
 

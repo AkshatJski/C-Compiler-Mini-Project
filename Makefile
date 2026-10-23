@@ -8,7 +8,29 @@ OBJS      = $(SRCS:src/%.c=$(OBJDIR)/%.o)
 TARGET    = mycc
 TESTDIR  ?= /tmp/mycc-test
 
-.PHONY: all clean test
+# --- Platform detection ----------------------------------------------------
+# The generated assembly is position-independent (every symbol access is
+# %rip-relative), but the *link* step still has to match the host:
+#
+#   Linux   gcc defaults to PIE; -no-pie keeps the classic layout.
+#   macOS   Apple's linker rejects -no-pie outright, and Mach-O wants a
+#           leading '_' on external symbols, so the compiler is asked for
+#           --target=darwin instead (BUG-018).
+#   Windows MinGW defaults to non-PIE and needs no flag.
+UNAME_S := $(shell uname -s 2>/dev/null)
+
+ifeq ($(UNAME_S),Darwin)
+  LDFLAGS    :=
+  TARGETFLAG := --target=darwin
+else ifneq (,$(findstring MINGW,$(UNAME_S)))
+  LDFLAGS    :=
+  TARGETFLAG := --target=windows
+else
+  LDFLAGS    := -no-pie
+  TARGETFLAG :=
+endif
+
+.PHONY: all clean test difftest
 
 all: $(TARGET)
 
@@ -26,10 +48,15 @@ test: $(TARGET)
 		if [ -z "$$expected" ]; then \
 			echo "SKIP: $$t (no EXPECT marker)"; continue; \
 		fi; \
+		warn=$$(sed -n 's/.*WARN:[[:space:]]*//p' "$$t" | tr -d '\r' | head -n1); \
 		base=$$(basename "$$t" .c); \
-		./$(TARGET) "$$t" -o "$(TESTDIR)/$$base.s" \
-			|| { echo "FAIL: compile $$t"; exit 1; }; \
-		$(CC) -no-pie -o "$(TESTDIR)/$$base" "$(TESTDIR)/$$base.s" \
+		./$(TARGET) $(TARGETFLAG) "$$t" -o "$(TESTDIR)/$$base.s" \
+			>"$(TESTDIR)/$$base.out" 2>&1 \
+			|| { echo "FAIL: compile $$t"; cat "$(TESTDIR)/$$base.out"; exit 1; }; \
+		if [ -n "$$warn" ] && ! grep -qF "$$warn" "$(TESTDIR)/$$base.out"; then \
+			echo "FAIL: $$t missing warning: $$warn"; exit 1; \
+		fi; \
+		$(CC) $(LDFLAGS) -o "$(TESTDIR)/$$base" "$(TESTDIR)/$$base.s" \
 			|| { echo "FAIL: assemble $$t"; exit 1; }; \
 		"$(TESTDIR)/$$base"; actual=$$?; \
 		if [ "$$actual" != "$$expected" ]; then \
@@ -39,7 +66,7 @@ test: $(TARGET)
 	done
 	@for t in tests/errors/*.c; do \
 		[ -e "$$t" ] || continue; \
-		expected=$$(sed -n 's|^// EXPECT-ERROR:[[:space:]]*||p' "$$t" | head -n1); \
+		expected=$$(sed -n 's|^// EXPECT-ERROR:[[:space:]]*||p' "$$t" | tr -d '\r' | head -n1); \
 		base=$$(basename "$$t" .c); \
 		if ./$(TARGET) "$$t" -o "$(TESTDIR)/err_$$base.s" >"$(TESTDIR)/err.out" 2>&1; then \
 			echo "FAIL: $$t was accepted but should be rejected"; exit 1; \
@@ -49,7 +76,30 @@ test: $(TARGET)
 		fi; \
 		echo "PASS: $$t (rejected)"; \
 	done
+	@rm -f "$(TESTDIR)/contract.s"; \
+	if ./$(TARGET) tests/errors/undeclared.c -o "$(TESTDIR)/contract.s" \
+			>/dev/null 2>&1; then :; fi; \
+	if [ -e "$(TESTDIR)/contract.s" ]; then \
+		echo "FAIL: a failed compile left $(TESTDIR)/contract.s behind"; exit 1; \
+	fi; \
+	echo "PASS: failed compile leaves no output file"
+	@rm -f "$(TESTDIR)/silent.out"; \
+	if ! ./$(TARGET) -w tests/25_fall_off_end.c -o "$(TESTDIR)/silent.s" \
+			>"$(TESTDIR)/silent.out" 2>&1; then \
+		echo "FAIL: -w turned a valid compile into a failure"; exit 1; \
+	fi; \
+	if grep -q "warning:" "$(TESTDIR)/silent.out"; then \
+		echo "FAIL: -w did not silence the warning channel"; exit 1; \
+	fi; \
+	echo "PASS: -w silences warnings without failing the build"
 	@echo "All tests passed"
+
+# Differential testing: compile tests/diff/*.c with mycc *and* with the host
+# compiler, then require the same exit code. `make test` proves mycc gives a
+# plausible answer; this proves it gives the same answer as a real compiler.
+difftest: $(TARGET)
+	@MYCC=./$(TARGET) CC="$(CC)" TARGETFLAG="$(TARGETFLAG)" LDFLAGS="$(LDFLAGS)" \
+		sh difftest.sh
 
 clean:
 	rm -f $(TARGET) $(OBJS)

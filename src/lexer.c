@@ -6,12 +6,29 @@
 #include "lexer.h"
 #include "util.h"
 
+/* `#include`, `#define` and friends belong to the preprocessor, which mycc
+ * does not implement. Every line that starts with '#' in trivia position is
+ * therefore skipped whole and reported *once* per compilation: reporting it
+ * per line turns a single `#include` into a wall of identical errors. */
+static int g_directive_reported = 0;
+
 void lexer_init(Lexer *lexer, const char *source)
 {
     lexer->source = source;
     lexer->pos = 0;
     lexer->line = 1;
     lexer->col = 1;
+    g_directive_reported = 0;
+
+    /* A UTF-8 byte-order mark is invisible but would otherwise be lexed as
+     * two stray high-bit characters (BUG-011). Editors on Windows write it
+     * by default, so skipping it here is worth the four lines. */
+    if ((unsigned char)source[0] == 0xEF &&
+        (unsigned char)source[1] == 0xBB &&
+        (unsigned char)source[2] == 0xBF)
+    {
+        lexer->pos = 3;
+    }
 }
 
 static int at_end(const Lexer *lexer)
@@ -96,6 +113,25 @@ static void skip_trivia(Lexer *lexer)
             {
                 report_error(start_line, start_col, "unterminated block comment");
                 return;
+            }
+        }
+        else if (c == '#')
+        {
+            /* Preprocessor directive: not supported, but the *reason* matters
+             * more than the symptom, and one report per file is enough. The
+             * whole physical line is dropped so the parser sees clean input
+             * (BUG-012). */
+            if (!g_directive_reported)
+            {
+                g_directive_reported = 1;
+                report_error(lexer->line, lexer->col,
+                             "preprocessor directives are not supported "
+                             "(mycc has no #include/#define; write "
+                             "self-contained code)");
+            }
+            while (!at_end(lexer) && peek(lexer) != '\n')
+            {
+                advance(lexer);
             }
         }
         else
@@ -184,9 +220,26 @@ static Token lex_number(Lexer *lexer)
     }
     else
     {
+        /* A leading 0 with more digits means octal, so "08" and "09" are
+         * errors rather than silently becoming 0 (BUG-008). Validate the
+         * digits we just consumed; report at the offending column. */
+        int octal = peek(lexer) == '0';
         while (isdigit((unsigned char)peek(lexer)))
         {
             advance(lexer);
+        }
+        if (octal)
+        {
+            for (size_t p = start + 1; p < lexer->pos; p++)
+            {
+                if (lexer->source[p] > '7')
+                {
+                    report_error(start_line, start_col + (int)(p - start),
+                                 "invalid digit '%c' in octal constant",
+                                 lexer->source[p]);
+                    break;
+                }
+            }
         }
     }
     /* Optional integer suffix (U / L / UL / LL / ULL in any reasonably
@@ -304,12 +357,59 @@ static Token lex_char_literal(Lexer *lexer)
     return make_token(TOKEN_CHAR_LIT, xstrdup(text), start_line, start_col);
 }
 
+/* String literals are a later-phase feature. Skip the whole literal -- honouring
+ * backslash escapes so that "\"" does not end it early -- and report it, so the
+ * rest of the file still lexes and the user sees the other errors too
+ * (BUG-013). */
+static void skip_string_literal(Lexer *lexer)
+{
+    int start_line = lexer->line;
+    int start_col = lexer->col;
+    advance(lexer); /* opening '"' */
+
+    int closed = 0;
+    while (!at_end(lexer) && peek(lexer) != '\n')
+    {
+        if (peek(lexer) == '"')
+        {
+            advance(lexer);
+            closed = 1;
+            break;
+        }
+        if (peek(lexer) == '\\' && peek_next(lexer) != '\0')
+        {
+            advance(lexer); /* the escaped character is data, not a quote */
+        }
+        advance(lexer);
+    }
+
+    if (!closed)
+    {
+        report_error(start_line, start_col, "unterminated string literal");
+        return;
+    }
+    report_error(start_line, start_col,
+                 "string literals are not supported by mycc");
+}
+
 Token lexer_next_token(Lexer *lexer)
 {
-    skip_trivia(lexer);
-    if (at_end(lexer))
+    /* A string literal produces no token: drop it and keep looking. Doing
+     * this in a loop (rather than by recursion) keeps deeply string-heavy
+     * files from growing the C stack. */
+    for (;;)
     {
-        return make_token(TOKEN_EOF, NULL, lexer->line, lexer->col);
+        skip_trivia(lexer);
+        if (at_end(lexer))
+        {
+            return make_token(TOKEN_EOF, NULL, lexer->line, lexer->col);
+        }
+        if (peek(lexer) == '"')
+        {
+            skip_string_literal(lexer);
+            continue;
+        }
+        break;
     }
 
     int line = lexer->line;

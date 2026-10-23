@@ -5,6 +5,8 @@
 #include "util.h"
 
 static int g_error_count = 0;
+static int g_warning_count = 0;
+static int g_warnings_enabled = 1;
 static const char *g_source_path = NULL;
 
 void set_source_path(const char *path)
@@ -83,6 +85,43 @@ int error_count(void)
 void error_reset(void)
 {
     g_error_count = 0;
+    g_warning_count = 0;
+}
+
+/* Same shape as report_error(), but advisory: the compilation still succeeds
+ * and the exit status is unaffected. Keeping the two counters apart is what
+ * lets `make test` assert on warnings without turning them into failures. */
+void report_warning(int line, int col, const char *fmt, ...)
+{
+    if (!g_warnings_enabled)
+    {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    if (g_source_path != NULL)
+    {
+        fprintf(stderr, "%s:", g_source_path);
+    }
+    if (line > 0 && col > 0)
+    {
+        fprintf(stderr, "%d:%d: ", line, col);
+    }
+    fprintf(stderr, "warning: ");
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    g_warning_count++;
+}
+
+int warning_count(void)
+{
+    return g_warning_count;
+}
+
+void set_warnings_enabled(int enabled)
+{
+    g_warnings_enabled = enabled != 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -256,6 +295,79 @@ void struct_add_member(Type *struct_type, const char *name, Type *member_type)
     {
         struct_type->align = m_align;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Type names for diagnostics                                        */
+/* ------------------------------------------------------------------ */
+
+static void describe_append(char *buf, size_t size, size_t *used,
+                            const char *text)
+{
+    if (*used >= size)
+    {
+        return;
+    }
+    int n = snprintf(buf + *used, size - *used, "%s", text);
+    if (n > 0)
+    {
+        *used += (size_t)n;
+        if (*used >= size)
+        {
+            *used = size - 1; /* truncated; keep the buffer terminated */
+        }
+    }
+}
+
+static void describe_rec(const Type *t, char *buf, size_t size, size_t *used)
+{
+    if (t == NULL)
+    {
+        describe_append(buf, size, used, "<unknown>");
+        return;
+    }
+    switch (t->kind)
+    {
+    case TYPE_INT:
+        describe_append(buf, size, used, t->is_unsigned ? "unsigned int" : "int");
+        break;
+    case TYPE_CHAR:
+        describe_append(buf, size, used,
+                        t->is_unsigned ? "unsigned char" : "char");
+        break;
+    case TYPE_VOID:
+        describe_append(buf, size, used, "void");
+        break;
+    case TYPE_STRUCT:
+        describe_append(buf, size, used, "struct ");
+        describe_append(buf, size, used,
+                        t->struct_tag != NULL ? t->struct_tag : "<anonymous>");
+        break;
+    case TYPE_PTR:
+        describe_rec(t->base, buf, size, used);
+        describe_append(buf, size, used, " *");
+        break;
+    case TYPE_ARRAY:
+    {
+        char dims[32];
+        describe_rec(t->base, buf, size, used);
+        snprintf(dims, sizeof(dims), "[%d]", t->array_size);
+        describe_append(buf, size, used, dims);
+        break;
+    }
+    }
+}
+
+void type_describe(const Type *t, char *buf, size_t size)
+{
+    if (buf == NULL || size == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    size_t used = 0;
+    describe_rec(t, buf, size, &used);
+    buf[used < size ? used : size - 1] = '\0';
 }
 
 void collect_switch_cases(ASTNode *body, ASTNode ***vec, int *n, int *cap)
