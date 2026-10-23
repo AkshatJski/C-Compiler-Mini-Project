@@ -958,6 +958,11 @@ int sum_row(int *row, int n) {
 }
 ```
 
+It returns 0. Note the two `big` checks: they encode mycc's **64-bit** `unsigned`
+(`big << 63` reaches 2^63). A 32-bit-`unsigned` compiler gives a different
+answer there, which is exactly why programs under `tests/diff/` must stay
+width-agnostic — see the header of `tests/diff/01_compound_and_lvalue.c`.
+
 ### The newest additions: commas, casts, global pointers, struct copy
 
 This program returns 0 (verified against gcc; also in `tests/19`–`tests/23`):
