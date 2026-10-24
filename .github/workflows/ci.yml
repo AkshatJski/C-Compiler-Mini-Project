@@ -40,6 +40,16 @@ jobs:
       - name: Differential test (mycc vs gcc)
         shell: msys2 {0}
         run: make difftest
+      # The batch scripts are the build path the README tells a Windows reader
+      # to take, and they are a *second* entry point that can drift from the
+      # Makefile: it did, and a fresh clone could not link (BUG-028). Run it.
+      - name: Build and test through the batch scripts
+        shell: cmd
+        run: |
+          if exist C:\msys64\ucrt64\bin\gcc.exe set "PATH=C:\msys64\ucrt64\bin;%PATH%"
+          build.bat
+          if errorlevel 1 exit /b 1
+          test.bat
 
   # Exists to keep BUG-018 honest: the harness used to pass -no-pie (rejected by
   # Apple's linker) and the compiler emitted ELF symbol names, so a macOS build

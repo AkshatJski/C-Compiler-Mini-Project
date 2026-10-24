@@ -27,6 +27,7 @@ for %%t in (tests\errors\*.c) do call :error "%%t"
 call :output_file_contract
 call :silence_contract
 call :sign_contract
+call :myc_contract
 
 if "%FAILED%"=="1" (
     echo.
@@ -113,10 +114,45 @@ if defined WANTOUT (
 if not "!ACTUAL!"=="%EXPECTED%" (
     echo FAIL: %T% expected exit %EXPECTED%, got !ACTUAL!
     set FAILED=1
-) else if defined WANTOUT (
-    echo PASS: %T% ^(exit !ACTUAL!, printed "!WANTOUT!"^)
+    goto :eof
+)
+
+rem Optimizer parity (ROADMAP Phase 5). The optimizer -- constant folding,
+rem constant-branch elimination, dead-store removal and the expression temporary
+rem register -- is only allowed to change how a program is computed, never what it
+rem computes. Building every test a second time with --no-opt and comparing both
+rem the exit status and the complete standard output catches a miscompile without
+rem needing a second expected value in the file.
+mycc.exe --target=windows --no-opt "%T%" -o "build\%~n1.noopt.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: %T% --no-opt compile failed
+    set FAILED=1
+    goto :eof
+)
+%CC% -o "build\%~n1.noopt.exe" "build\%~n1.noopt.s"
+if errorlevel 1 (
+    echo FAIL: %T% --no-opt assemble failed
+    set FAILED=1
+    goto :eof
+)
+"build\%~n1.noopt.exe" > "build\%~n1.noopt.stdout" 2>&1
+set "ACTUALNOOPT=!errorlevel!"
+if not "!ACTUALNOOPT!"=="!ACTUAL!" (
+    echo FAIL: %T% --no-opt exits !ACTUALNOOPT!, optimized exits !ACTUAL!
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\%~n1.stdout" "build\%~n1.noopt.stdout" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: %T% --no-opt prints something different
+    set FAILED=1
+    goto :eof
+)
+
+if defined WANTOUT (
+    echo PASS: %T% ^(exit !ACTUAL!, printed "!WANTOUT!", opt/no-opt agree^)
 ) else (
-    echo PASS: %T% ^(exit !ACTUAL!^)
+    echo PASS: %T% ^(exit !ACTUAL!, opt/no-opt agree^)
 )
 goto :eof
 
@@ -215,4 +251,83 @@ if not errorlevel 1 (
     goto :eof
 )
 echo PASS: --sign embeds the provenance string, and only on request
+goto :eof
+
+rem --lang=myc is a second front end, not a translator: it builds the same AST,
+rem so it must emit byte-identical assembly to the C twin of the same program.
+rem That claim is the entire reason the toy language exists, so it is executed
+rem here rather than described in a README.
+:myc_contract
+mycc.exe --lang=myc demo\4_pair.myc -o "build\pair_myc.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the myc front end rejected a valid program
+    set FAILED=1
+    goto :eof
+)
+mycc.exe demo\4_pair.c -o "build\pair_c.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the C twin of the toy program was rejected
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\pair_myc.s" "build\pair_c.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: myc and the C twin emitted different assembly
+    set FAILED=1
+    goto :eof
+)
+%CC% -o "build\pair_myc.exe" "build\pair_myc.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the myc assembly did not link
+    set FAILED=1
+    goto :eof
+)
+"build\pair_myc.exe" >nul 2>&1
+set "MYCRC=!errorlevel!"
+if not "!MYCRC!"=="30" (
+    echo FAIL: the myc program returned !MYCRC! instead of 30
+    set FAILED=1
+    goto :eof
+)
+rem BUG-027: `if`/`else` must parse, and the else branch must actually *run*.
+rem The pair above proves the two front ends agree; this proves an else branch is
+rem reachable - which no test could see while both files of the pair lacked one.
+mycc.exe --lang=myc "tests\myc\else.myc" -o "build\myc_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: myc rejected if/else
+    set FAILED=1
+    goto :eof
+)
+mycc.exe "tests\myc\else.c" -o "build\c_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the C twin of the if/else test was rejected
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\myc_else.s" "build\c_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: myc and the C twin disagree about if/else
+    set FAILED=1
+    goto :eof
+)
+%CC% -o "build\myc_else.exe" "build\myc_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the if/else assembly did not link
+    set FAILED=1
+    goto :eof
+)
+"build\myc_else.exe" > "build\myc_else.stdout" 2>&1
+set "ELSERC=!errorlevel!"
+if not "!ELSERC!"=="8" (
+    echo FAIL: the if/else program returned !ELSERC! instead of 8
+    set FAILED=1
+    goto :eof
+)
+findstr /c:"else-branch" "build\myc_else.stdout" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the if/else program did not take the else branch
+    set FAILED=1
+    goto :eof
+)
+echo PASS: --lang=myc matches the C twin (if/else included) and runs
 goto :eof

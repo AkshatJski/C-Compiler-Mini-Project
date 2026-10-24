@@ -13,7 +13,7 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 ## What's inside
 
 - Hand-written lexer, recursive-descent parser, scoped symbol table,
-  semantic analysis, and code generator (~7,000 lines of C99 across `src/`
+  semantic analysis, an AST optimizer, and a code generator (~8,800 lines of C99 across `src/`
   and `include/`).
 - **Types:** `int` (64-bit), `char` (signed, one byte), their `unsigned`
   counterparts (`unsigned int`, `unsigned char`, and bare `unsigned`), plus
@@ -95,11 +95,14 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 - `--dump-tokens` / `--dump-ast` reveal the compiler's internals;
   `--target=linux|windows|darwin` picks the assembler flavour (defaulting to
   the host mycc was built for).
-- **One optimizer switch:** `--no-opt` disables Phase 5's constant folding and
-  constant-condition elimination, emitting exactly what the pre-optimizer code
-  generator emitted. It exists so the two back ends can be compared line for
-  line (`mycc hello.c -o a.s` vs `mycc --no-opt hello.c -o b.s`) and so that an
-  optimizer bug is always bisectable against a known-good path.
+- **One optimizer switch:** `--no-opt` disables all of Phase 5 - constant
+  folding, constant-condition elimination, dead local stores and expression
+  temporaries in registers - emitting exactly what the pre-optimizer code
+  generator emitted (that claim is checked: every test is built both ways and
+  must agree on exit status and complete output). It exists so the two paths can
+  be compared line for line (`mycc hello.c -o a.s` vs `mycc --no-opt hello.c -o
+  b.s`) and so that an optimizer bug is always bisectable against a known-good
+  path.
 - **Carets, not line numbers.** Every error and warning quotes the offending
   line and points at the column:
 
@@ -114,8 +117,8 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   which compiler built it (off by default).
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
-- **Tests:** 33 positive programs (`tests/01…33`) and 41 rejection tests
-  (`tests/errors/`), 77 checks in total — covering pointers (`12`), arrays
+- **Tests:** 35 positive programs (`tests/01-36`) and 41 rejection tests
+  (`tests/errors/`), 80 checks in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
@@ -123,9 +126,12 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   fall-off-the-end warning (`25`), hello world (`26`), the print built-ins
   (`27`), `extern printf` (`28`), string escapes (`29`), NUL bytes inside
   a literal (`30`), constant folding (`31`), constant-condition
-  elimination (`32`), and constant operands (`33`). Positive tests
-  assert the program's real **output** (`// EXPECT-OUT:`), not just its exit
-  code. `tests/diff/` additionally holds programs that are compiled by **both**
+  elimination (`32`), constant operands (`33`), dead local stores (`35`) and
+  temporaries in registers (`36`). Positive tests assert the program's real
+  **output** (`// EXPECT-OUT:`), not just its exit code, and each of them is
+  also built with `--no-opt` and required to print the same bytes, so the
+  optimizer is checked for changing behaviour on every test.
+  `tests/diff/` additionally holds programs that are compiled by **both**
   mycc and gcc and required to return the same exit code (`difftest.bat` /
   `make difftest`).
 
@@ -133,13 +139,68 @@ Still out of scope (by design): `float`/`double`, `long`/`short`, `enum`/
 `typedef`, aggregate initializer lists (`int a[2] = {1,2}`), `sizeof`, and the
 preprocessor. Structs are never passed or returned **by value** — take a
 pointer (`struct P *p`) instead, and the compiler says so. `int` remains
-64-bit (see the open Phase 1 decision in
-[ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too. `main` must still
+64-bit, so `unsigned int` is 64-bit too. `main` must still
 be `int main(void)`; `argv` is not available to mycc programs yet.
-The optimizer is deliberately shallow so far — constant folding and
-constant-condition elimination only. There is no register allocator: every
-expression still goes through the stack machine, and that is a documented
-tradeoff rather than an oversight (see `ROADMAP.md` Phase 5).
+The optimizer has four pieces, and they are deliberately the ones that can be
+argued for in a paragraph: constant folding, constant-condition elimination,
+dead local stores, and expression temporaries kept in a register. There is still
+no *global* register allocator - a value only lives in a register inside the
+expression that computes it - and that is a documented tradeoff rather than an
+oversight: copy propagation was measured as well and rejected (on a stack back
+end it saves nothing), and a liveness-based allocator needs an IR that does not
+exist yet.
+
+## A second language (`--lang=myc`)
+
+`mycc` has two front ends and one back end. The second reads **myc**, a small
+language with its own grammar, and lowers it to the *same* AST the C front end
+builds:
+
+```
+fn twice(n)
+  return n * 2
+end
+
+fn main() -> int
+  let total = 0
+  let i = 1
+  let name = "myc"
+
+  while i <= 5
+    total = total + twice(i)
+    i = i + 1
+  end
+
+  say "hello from "
+  say name
+  say total
+
+  if total == 30 and not 0
+    say "correct"
+  end
+
+  return total
+end
+```
+
+```
+mycc --lang=myc demo\4_pair.myc -o build\pair_myc.s
+mycc            demo\4_pair.c   -o build\pair_c.s
+fc /b build\pair_myc.s build\pair_c.s      # FC: no differences encountered
+```
+
+That is not a translation step: `demo\4_pair.myc` is never turned into C. Both
+front ends produce the same tree (a `while` is an `AST_WHILE` with the same
+children, `say x` becomes `print_int(x)`), and the single code generator turns
+that tree into assembly. Byte-identical output is the proof, and `test.bat`
+checks it on every run rather than trusting this paragraph.
+
+The language: `fn` / `end`, `let`, `say`, `if`/`else`, `while`, `return`, `and`,
+`or`, `not`, blocks terminated by `end` instead of `}`, no semicolons. Numbers
+and string literals only; every parameter is an `int`; `say` prints a number, or
+a string literal (or a `let` name initialised from one). The whole grammar is
+about 600 lines of `src/myc.c` — the statement forms are `parse_stmt`, and the
+expression ladder is `parse_expr` down to `parse_primary`.
 
 ## A tiny example
 
@@ -217,7 +278,7 @@ CALL printf  [3:5]
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (77 checks)
+.\test.bat         # runs the positive + error test suites (80 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
 .\showcase.bat     # end-to-end demo, returns 197
 .\demo.bat         # five-minute demo for a non-technical audience
@@ -246,19 +307,20 @@ Every push and pull request is built and tested on Linux, Windows
 fails on any compiler warning (`-Werror`), and every job runs both the
 exit-code suite and the differential test.
 
-## Documentation
+## Repository layout
 
-- [instructions.md](instructions.md) — full manual: language, build/test/showcase, troubleshooting.
-- [DEMO.md](DEMO.md) — presenter script for a non-technical audience (60s / 3min /
-  5min cuts, the questions you will actually be asked, and what to do when
-  something breaks live).
-- [ROADMAP.md](ROADMAP.md) — planned phases: C-fidelity fixes, more language,
-  I/O and the ABI, optimization, diagnostics and tooling. Phases 1–4 are
-  complete. Phase 5 (optimization) is in progress — constant folding,
-  constant-condition elimination and constant operands have landed; dataflow
-  copy propagation and the register allocator are the remainder, and the roadmap
-  says why they are staged last. Phase 6 (diagnostics and tooling) is partly
-  done: caret snippets, the warning channel, the differential harness and the
-  opt/no-opt equivalence check are in; `--interpret` and the random program
-  generator are not. Phase 7 has `--version`, `--sign` and three-target output;
-  floating point and an SSA IR are still open.
+| Path | What lives there |
+|---|---|
+| `src/`, `include/` | the compiler: lexer, parser, semantic analysis, optimizer, code generator, diagnostics, and the `myc` front end |
+| `tests/` | the positive suite (one program, one labelled exit status) and `tests/errors/` (programs that must be rejected, with the message expected) |
+| `tests/diff/` | programs compiled by **both** mycc and gcc and required to agree |
+| `tests/myc/` | the toy language's programs and their hand-written C twins |
+| `demo/`, `demos/` | the demo kit and the example programs the walkthroughs compile |
+| `test.bat`, `difftest.bat`, `Makefile` | the two independent ways to run the suite (Windows batch and POSIX make) |
+| `demo.bat`, `showcase.bat`, `tour.bat` | scripted walkthroughs of the compiler's output |
+
+This README is the repository's public document. The deeper engineering notes —
+the decision log, the execution-flow map, the learning guide and the bug ledger —
+are maintained locally alongside the code and are deliberately not published;
+everything a user or a reviewer needs to build, test and judge this compiler is
+in this file.

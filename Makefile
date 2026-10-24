@@ -1,8 +1,8 @@
 CC       ?= gcc
 CFLAGS    = -std=c99 -O2 -Wall -Wextra -Wpedantic -g
 CFLAGS   += -Iinclude
-SRCS      = src/main.c src/lexer.c src/parser.c src/symtab.c \
-            src/semantic.c src/codegen.c src/util.c src/dump.c
+SRCS      = src/main.c src/lexer.c src/parser.c src/myc.c src/symtab.c \
+            src/semantic.c src/opt.c src/codegen.c src/util.c src/dump.c
 OBJDIR    = build
 OBJS      = $(SRCS:src/%.c=$(OBJDIR)/%.o)
 TARGET    = mycc
@@ -68,6 +68,23 @@ test: $(TARGET)
 		fi; \
 		echo "PASS: $$t (exit $$actual)"; \
 	done
+	@for t in tests/*.c; do \
+		base=$$(basename "$$t" .c); \
+		[ -x "$(TESTDIR)/$$base" ] || continue; \
+		./$(TARGET) $(TARGETFLAG) --no-opt "$$t" -o "$(TESTDIR)/$$base.noopt.s" \
+			|| { echo "FAIL: $$t --no-opt compile failed"; exit 1; }; \
+		$(CC) $(LDFLAGS) -o "$(TESTDIR)/$$base.noopt" "$(TESTDIR)/$$base.noopt.s" \
+			|| { echo "FAIL: $$t --no-opt assemble failed"; exit 1; }; \
+		"$(TESTDIR)/$$base" > "$(TESTDIR)/$$base.opt.stdout" 2>&1; opt=$$?; \
+		"$(TESTDIR)/$$base.noopt" > "$(TESTDIR)/$$base.noopt.stdout" 2>&1; noopt=$$?; \
+		if [ "$$opt" != "$$noopt" ]; then \
+			echo "FAIL: $$t optimized exits $$opt, --no-opt exits $$noopt"; exit 1; \
+		fi; \
+		if ! cmp -s "$(TESTDIR)/$$base.opt.stdout" "$(TESTDIR)/$$base.noopt.stdout"; then \
+			echo "FAIL: $$t optimized and --no-opt print different output"; exit 1; \
+		fi; \
+	done
+	@echo "PASS: optimized and --no-opt agree on every test"
 	@for t in tests/errors/*.c; do \
 		[ -e "$$t" ] || continue; \
 		expected=$$(sed -n 's|^// EXPECT-ERROR:[[:space:]]*||p' "$$t" | tr -d '\r' | head -n1); \
@@ -96,6 +113,27 @@ test: $(TARGET)
 		echo "FAIL: -w did not silence the warning channel"; exit 1; \
 	fi; \
 	echo "PASS: -w silences warnings without failing the build"
+	@./$(TARGET) --lang=myc demo/4_pair.myc -o "$(TESTDIR)/pair_myc.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: the myc front end rejected a valid program"; exit 1; }; \
+	./$(TARGET) demo/4_pair.c -o "$(TESTDIR)/pair_c.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: the C twin of the toy program was rejected"; exit 1; }; \
+	cmp -s "$(TESTDIR)/pair_myc.s" "$(TESTDIR)/pair_c.s" \
+		|| { echo "FAIL: myc and the C twin emitted different assembly"; exit 1; }; \
+	./$(TARGET) --lang=myc tests/myc/else.myc -o "$(TESTDIR)/myc_else.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: myc rejected if/else (BUG-027)"; exit 1; }; \
+	./$(TARGET) tests/myc/else.c -o "$(TESTDIR)/c_else.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: the C twin of the if/else test was rejected"; exit 1; }; \
+	cmp -s "$(TESTDIR)/myc_else.s" "$(TESTDIR)/c_else.s" \
+		|| { echo "FAIL: myc and the C twin disagree about if/else"; exit 1; }; \
+	$(CC) $(LDFLAGS) -o "$(TESTDIR)/myc_else" "$(TESTDIR)/myc_else.s" \
+		|| { echo "FAIL: the if/else assembly did not link"; exit 1; }; \
+	"$(TESTDIR)/myc_else" > "$(TESTDIR)/myc_else.stdout" 2>&1; rc=$$?; \
+	if [ "$$rc" != "8" ]; then \
+		echo "FAIL: the if/else program returned $$rc instead of 8"; exit 1; \
+	fi; \
+	grep -q "else-branch" "$(TESTDIR)/myc_else.stdout" \
+		|| { echo "FAIL: the if/else program did not take the else branch"; exit 1; }; \
+	echo "PASS: --lang=myc matches the C twin (if/else included) and runs"
 	@echo "All tests passed"
 
 # Differential testing: compile tests/diff/*.c with mycc *and* with the host
