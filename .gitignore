@@ -9,30 +9,26 @@ mycc.exe
 # Executables produced by the test/showcase flow
 *.exe
 
-# Local engineering documentation (private, kept out of the repo).
-# README.md is the only published document: it is the repository's front page
-# and has to stand on its own. Everything else here is working material.
-README.docs
-ROADMAP.docs
-decision.md
-Flow.md
-learn.md
-instructions.md
-ROADMAP.md
-DEMO.md
-demo/expected.txt
-decision.docs
-Flow.docs
-learn.docs
-# Bug ledger: datewise, commit-linked. Published 2026-10-24 at the author's
-# request - the ledger is the project's strongest evidence, and every entry in
-# it is reproducible from this repository's own tests and CI runs.
-# The reasoning notes (decision.md, Flow.md, learn.md) stay local.
+# ---------------------------------------------------------------------------
+# docs/ - all developer documentation lives in one folder.
+#
+# Published (tracked): REPORT-DRAFT.md, report.md, ROADMAP.md, Flow.md, DEMO.md
+# Local only (ignored): decision.md, learn.md, instructions.md
+#
+# The three local files are the day-to-day working notes: the decision log, the
+# learning guide and the long user manual. They read badly out of context and
+# change constantly, so they stay in the working tree and out of the history.
+# Everything else in docs/ is an artefact: the college report, the bug ledger,
+# the phase plan, the execution-flow map and the demo playbook, and all of it is
+# reproducible from this repository's own tests and CI runs.
+# ---------------------------------------------------------------------------
+docs/decision.md
+docs/learn.md
+docs/instructions.md
 
-# The project report (REPORT-DRAFT.md) is published on purpose - un-ignored
-# 2026-10-24 at the author's request. It is the submission artefact, and every
-# number in it is reproducible from this repository. The engineering notes it
-# draws on (decision.md, Flow.md, learn.md, report.md) stay local.
+# The demo transcript is a captured recording of demo.bat, not documentation.
+# Keep it local: it is read out only if the live demo dies on stage.
+demo/expected.txt
 
 # Editor / OS cruft
 .vscode/

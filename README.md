@@ -362,8 +362,21 @@ than a compiler bug.
 | `test.bat`, `difftest.bat`, `fuzz.bat`, `Makefile` | the two independent ways to run the suite (Windows batch and POSIX make) |
 | `demo.bat`, `showcase.bat`, `tour.bat` | scripted walkthroughs of the compiler's output |
 
-This README is the repository's public document. The deeper engineering notes —
-the decision log, the execution-flow map, the learning guide and the bug ledger —
-are maintained locally alongside the code and are deliberately not published;
-everything a user or a reviewer needs to build, test and judge this compiler is
-in this file.
+## Documentation
+
+`README.md` is the front page: how to build, run and test the compiler. The rest
+of the documentation lives in **`docs/`**:
+
+| File | What it is |
+|---|---|
+| `docs/REPORT-DRAFT.md` | the full project report: objectives, module-by-module implementation, grammar, a worked C → assembly example, the optimization measurements, the testing methodology, the defect analysis and 25 viva questions |
+| `docs/report.md` | the bug ledger: 31 defects, each with a reproduction, a root cause, a fix commit and the regression test that fails on the old code |
+| `docs/Flow.md` | the execution flow map: which function calls which, from `main()` to the emitted assembly |
+| `docs/ROADMAP.md` | the phase plan, what landed in each phase, and the future work |
+| `docs/DEMO.md` | the demo playbook: every feature, the command that shows it, and what to say |
+
+Three working notes are deliberately kept out of the repository and maintained
+locally: `decision.md` (the decision log), `learn.md` (a learning guide) and
+`instructions.md` (a long user manual). They change constantly and read badly
+out of context; the report above summarises everything they contain that a
+reviewer needs.

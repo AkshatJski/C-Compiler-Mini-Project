@@ -15,7 +15,7 @@ rem
 rem  Requirements: mycc.exe (run build.bat first) and MinGW gcc.
 rem  Or set CC to the full path of your gcc.
 rem
-rem  Presenter script: DEMO.md.  Fallback transcript: demo\expected.txt.
+rem  Presenter script: docs\DEMO.md.  Fallback transcript: demo\expected.txt.
 rem ============================================================
 setlocal enabledelayedexpansion
 title mycc - a small compiler that actually compiles
@@ -207,7 +207,7 @@ if !TR!==0 (echo       tests        : all passed) else (echo       tests        
 if !DR!==0 (echo       versus gcc   : all agreed) else (echo       versus gcc   : DISAGREEMENT - see build\demo_diff.log)
 echo.
 echo   And when it got something wrong, it is written down, with
-echo   the commit it was found in: report.md, 26 entries.
+echo   the commit it was found in: docs\report.md, 31 entries.
 echo.
 echo   Thank you.
 echo.
