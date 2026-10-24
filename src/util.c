@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "util.h"
 
 static int g_error_count = 0;
@@ -132,6 +133,32 @@ char *xstrdup(const char *s)
     char *copy = xmalloc(len + 1);
     memcpy(copy, s, len + 1);
     return copy;
+}
+
+/* One place for C's integer-literal rules. The lexer has already validated the
+ * digits and dropped any U/L suffix, so there is nothing left to check except
+ * range and "did strtoll consume everything". Base 0 is the whole point: it is
+ * what makes 0x10 sixteen and 010 eight, and it is why the toy language can
+ * accept the same literals as C without a second rule book (BUG-029). */
+IntLiteralStatus parse_integer_literal(const char *text, long long *out)
+{
+    if (text == NULL || out == NULL)
+    {
+        return INT_LITERAL_MALFORMED;
+    }
+    errno = 0;
+    char *end = NULL;
+    long long value = strtoll(text, &end, 0);
+    if (end == text || end == NULL || *end != '\0')
+    {
+        return INT_LITERAL_MALFORMED;
+    }
+    if (errno == ERANGE)
+    {
+        return INT_LITERAL_RANGE;
+    }
+    *out = value;
+    return INT_LITERAL_OK;
 }
 
 void *xrealloc(void *ptr, size_t size)

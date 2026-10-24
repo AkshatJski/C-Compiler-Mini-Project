@@ -15,12 +15,16 @@ TESTDIR  ?= /tmp/mycc-test
 #   Linux   gcc defaults to PIE; -no-pie keeps the classic layout.
 #   macOS   Apple's linker rejects -no-pie outright, and Mach-O wants a
 #           leading '_' on external symbols, so the compiler is asked for
-#           --target=darwin instead (BUG-018).
+#           --target=darwin instead (BUG-018). The backend emits x86-64, so
+#           the driver is pinned to that architecture: on an Apple Silicon
+#           host (every current GitHub macOS runner) clang would otherwise
+#           read the .s as arm64 and fail with "unrecognized instruction
+#           mnemonic" on the first `movq` (BUG-031).
 #   Windows MinGW defaults to non-PIE and needs no flag.
 UNAME_S := $(shell uname -s 2>/dev/null)
 
 ifeq ($(UNAME_S),Darwin)
-  LDFLAGS    :=
+  LDFLAGS    := -arch x86_64
   TARGETFLAG := --target=darwin
 else ifneq (,$(findstring MINGW,$(UNAME_S)))
   LDFLAGS    :=
@@ -30,7 +34,7 @@ else
   TARGETFLAG :=
 endif
 
-.PHONY: all clean test difftest
+.PHONY: all clean test difftest fuzz
 
 all: $(TARGET)
 
@@ -41,8 +45,31 @@ $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# --- Random-program differential testing (Phase 6) --------------------------
+# tests/diff/ holds four programs somebody thought of. tools/fuzz.c generates
+# programs nobody thought of, and difftest.sh checks them the same way: mycc's
+# output and gcc's must return the same exit code. Deterministic in the seed,
+# so a failing case is reproducible by number.
+FUZZ_N    ?= 1000
+FUZZ_SEED ?= 1
+FUZZDIR   ?= $(OBJDIR)/fuzz
+
+$(OBJDIR)/fuzzgen: tools/fuzz.c
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
+fuzz: $(TARGET) $(OBJDIR)/fuzzgen
+	@rm -rf $(FUZZDIR) && mkdir -p $(FUZZDIR)
+	@./$(OBJDIR)/fuzzgen $(FUZZ_N) $(FUZZDIR) $(FUZZ_SEED)
+	@MYCC=./$(TARGET) CC="$(CC)" TARGETFLAG="$(TARGETFLAG)" LDFLAGS="$(LDFLAGS)" \
+		SRCDIR=$(FUZZDIR) QUIET=1 OUT=$(FUZZDIR)/out sh difftest.sh
+
 test: $(TARGET)
 	@mkdir -p $(TESTDIR)
+	@command -v cmp >/dev/null 2>&1 || { \
+		echo "FAIL: 'cmp' is required by the optimized/--no-opt check"; \
+		echo "      install diffutils (MSYS2: pacman -S diffutils)"; exit 1; \
+	}
 	@for t in tests/*.c; do \
 		expected=$$(sed -n 's/.*EXPECT:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$$t" | head -n1); \
 		if [ -z "$$expected" ]; then \
@@ -119,21 +146,28 @@ test: $(TARGET)
 		|| { echo "FAIL: the C twin of the toy program was rejected"; exit 1; }; \
 	cmp -s "$(TESTDIR)/pair_myc.s" "$(TESTDIR)/pair_c.s" \
 		|| { echo "FAIL: myc and the C twin emitted different assembly"; exit 1; }; \
-	./$(TARGET) --lang=myc tests/myc/else.myc -o "$(TESTDIR)/myc_else.s" >/dev/null 2>&1 \
-		|| { echo "FAIL: myc rejected if/else (BUG-027)"; exit 1; }; \
-	./$(TARGET) tests/myc/else.c -o "$(TESTDIR)/c_else.s" >/dev/null 2>&1 \
-		|| { echo "FAIL: the C twin of the if/else test was rejected"; exit 1; }; \
-	cmp -s "$(TESTDIR)/myc_else.s" "$(TESTDIR)/c_else.s" \
-		|| { echo "FAIL: myc and the C twin disagree about if/else"; exit 1; }; \
-	$(CC) $(LDFLAGS) -o "$(TESTDIR)/myc_else" "$(TESTDIR)/myc_else.s" \
-		|| { echo "FAIL: the if/else assembly did not link"; exit 1; }; \
-	"$(TESTDIR)/myc_else" > "$(TESTDIR)/myc_else.stdout" 2>&1; rc=$$?; \
-	if [ "$$rc" != "8" ]; then \
-		echo "FAIL: the if/else program returned $$rc instead of 8"; exit 1; \
-	fi; \
-	grep -q "else-branch" "$(TESTDIR)/myc_else.stdout" \
-		|| { echo "FAIL: the if/else program did not take the else branch"; exit 1; }; \
-	echo "PASS: --lang=myc matches the C twin (if/else included) and runs"
+	echo "PASS: --lang=myc matches the C twin (demo/4_pair)"
+	@for base in else literals; do \
+		myc=tests/myc/$$base.myc; c=tests/myc/$$base.c; \
+		expected=$$(sed -n 's/.*EXPECT:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' "$$myc" | head -n1); \
+		wantout=$$(sed -n 's/.*EXPECT-OUT:[[:space:]]*//p' "$$myc" | tr -d '\r' | head -n1); \
+		./$(TARGET) --lang=myc "$$myc" -o "$(TESTDIR)/myc_$$base.s" >/dev/null 2>&1 \
+			|| { echo "FAIL: myc rejected $$myc"; exit 1; }; \
+		./$(TARGET) "$$c" -o "$(TESTDIR)/c_$$base.s" >/dev/null 2>&1 \
+			|| { echo "FAIL: the C twin $$c was rejected"; exit 1; }; \
+		cmp -s "$(TESTDIR)/myc_$$base.s" "$(TESTDIR)/c_$$base.s" \
+			|| { echo "FAIL: $$myc and its C twin emitted different assembly"; exit 1; }; \
+		$(CC) $(LDFLAGS) -o "$(TESTDIR)/myc_$$base" "$(TESTDIR)/myc_$$base.s" \
+			|| { echo "FAIL: the assembly for $$myc did not link"; exit 1; }; \
+		"$(TESTDIR)/myc_$$base" > "$(TESTDIR)/myc_$$base.stdout" 2>&1; rc=$$?; \
+		if [ "$$rc" != "$$expected" ]; then \
+			echo "FAIL: $$myc returned $$rc instead of $$expected"; exit 1; \
+		fi; \
+		if [ -n "$$wantout" ] && ! grep -qF "$$wantout" "$(TESTDIR)/myc_$$base.stdout"; then \
+			echo "FAIL: $$myc missing output: $$wantout"; exit 1; \
+		fi; \
+		echo "PASS: --lang=myc matches its C twin: $$myc"; \
+	done
 	@echo "All tests passed"
 
 # Differential testing: compile tests/diff/*.c with mycc *and* with the host
@@ -144,5 +178,5 @@ difftest: $(TARGET)
 		sh difftest.sh
 
 clean:
-	rm -f $(TARGET) $(OBJS)
-	-rmdir $(OBJDIR) 2>/dev/null || true
+	rm -f $(TARGET) $(OBJS) $(OBJDIR)/fuzzgen
+	-rm -rf $(OBJDIR) 2>/dev/null || true

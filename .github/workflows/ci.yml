@@ -18,6 +18,14 @@ jobs:
         run: make test
       - name: Differential test (mycc vs gcc)
         run: make difftest
+      # Random programs, checked against gcc. This is the reference campaign:
+      # the smaller Windows/macOS runs below are smoke tests of the same tool.
+      - name: Random-program differential test (1000 programs)
+        run: make fuzz FUZZ_N=1000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mycc-linux-x86_64
+          path: mycc
 
   windows:
     name: Windows (MSYS2 / UCRT64)
@@ -28,8 +36,14 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          # diffutils is not part of the minimal MSYS2 that setup-msys2
+          # installs, and `make test` compares outputs with cmp. Without it the
+          # parity check fails on the first program with "cmp: command not
+          # found" -- which reads like a codegen bug and cost a red CI run to
+          # track down (BUG-030).
           install: >-
             make
+            diffutils
             mingw-w64-ucrt-x86_64-gcc
       - name: Build
         shell: msys2 {0}
@@ -40,6 +54,9 @@ jobs:
       - name: Differential test (mycc vs gcc)
         shell: msys2 {0}
         run: make difftest
+      - name: Random-program differential test (200 programs)
+        shell: msys2 {0}
+        run: make fuzz FUZZ_N=200
       # The batch scripts are the build path the README tells a Windows reader
       # to take, and they are a *second* entry point that can drift from the
       # Makefile: it did, and a fresh clone could not link (BUG-028). Run it.
@@ -50,6 +67,10 @@ jobs:
           build.bat
           if errorlevel 1 exit /b 1
           test.bat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mycc-windows-x86_64
+          path: mycc.exe
 
   # Exists to keep BUG-018 honest: the harness used to pass -no-pie (rejected by
   # Apple's linker) and the compiler emitted ELF symbol names, so a macOS build
@@ -60,9 +81,26 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      # The backend emits x86-64 assembly, so on an Apple Silicon runner both
+      # assembling (the Makefile passes -arch x86_64) and *running* the result
+      # need Rosetta. Probe it explicitly: without this probe a missing Rosetta
+      # shows up as eighty confusing test failures instead of one message.
+      - name: Ensure Rosetta 2 can run x86-64 test binaries
+        run: |
+          sudo softwareupdate --install-rosetta --agree-to-license || true
+          arch -x86_64 /usr/bin/true || {
+            echo "Rosetta 2 is unavailable: the x86-64 test binaries cannot run here"
+            exit 1
+          }
       - name: Build
         run: make
       - name: Test
         run: make test
       - name: Differential test (mycc vs clang)
         run: make difftest
+      - name: Random-program differential test (100 programs)
+        run: make fuzz FUZZ_N=100
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mycc-macos-x86_64
+          path: mycc

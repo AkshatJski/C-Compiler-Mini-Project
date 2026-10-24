@@ -13,6 +13,7 @@
 # that class of bug for free.
 #
 # Usage:  ./difftest.sh            (expects ./mycc and tests/diff/*.c)
+#         SRCDIR=build/fuzz QUIET=1 ./difftest.sh   (the fuzz corpus)
 # Exit:   0 = all programs agreed, 1 = a mismatch or a build failure.
 set -u
 
@@ -21,13 +22,17 @@ CC=${CC:-gcc}
 OUT=${OUT:-/tmp/mycc-difftest}
 TARGETFLAG=${TARGETFLAG:-}
 LDFLAGS=${LDFLAGS:-}
+SRCDIR=${SRCDIR:-tests/diff}
+QUIET=${QUIET:-}
 
 mkdir -p "$OUT"
 status=0
+total=0
 
-for src in tests/diff/*.c; do
-    [ -e "$src" ] || { echo "no tests/diff/*.c found"; exit 1; }
+for src in "$SRCDIR"/*.c; do
+    [ -e "$src" ] || { echo "no $SRCDIR/*.c found"; exit 1; }
     base=$(basename "$src" .c)
+    total=$((total + 1))
 
     if ! "$MYCC" $TARGETFLAG "$src" -o "$OUT/$base.mycc.s" > "$OUT/$base.mycc.log" 2>&1; then
         echo "FAIL: $src — mycc rejected it"
@@ -52,14 +57,18 @@ for src in tests/diff/*.c; do
     "$OUT/$base.ref.exe"; theirs=$?
 
     if [ "$mine" != "$theirs" ]; then
-        echo "FAIL: $src — mycc returned $mine, the reference compiler returned $theirs"
+        echo "FAIL: $src - mycc returned $mine, the reference compiler returned $theirs"
         status=1
-    else
+    elif [ -z "$QUIET" ]; then
         echo "PASS: $src (both returned $mine)"
     fi
 done
 
 if [ "$status" = 0 ]; then
-    echo "All differential tests passed"
+    if [ -n "$QUIET" ]; then
+        echo "PASS: all $total programs agreed with the reference compiler"
+    else
+        echo "All differential tests passed"
+    fi
 fi
 exit $status

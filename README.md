@@ -118,7 +118,8 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
 - **Tests:** 35 positive programs (`tests/01-36`) and 41 rejection tests
-  (`tests/errors/`), 80 checks in total — covering pointers (`12`), arrays
+  (`tests/errors/`), plus 5 contract assertions — 81 checks in total — covering
+  pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
@@ -133,14 +134,19 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   optimizer is checked for changing behaviour on every test.
   `tests/diff/` additionally holds programs that are compiled by **both**
   mycc and gcc and required to return the same exit code (`difftest.bat` /
-  `make difftest`).
+  `make difftest`), and `tools/fuzz.c` generates programs nobody wrote for the
+  same check (`fuzz.bat` / `make fuzz`).
 
 Still out of scope (by design): `float`/`double`, `long`/`short`, `enum`/
 `typedef`, aggregate initializer lists (`int a[2] = {1,2}`), `sizeof`, and the
 preprocessor. Structs are never passed or returned **by value** — take a
-pointer (`struct P *p`) instead, and the compiler says so. `int` remains
-64-bit, so `unsigned int` is 64-bit too. `main` must still
-be `int main(void)`; `argv` is not available to mycc programs yet.
+pointer (`struct P *p`) instead, and the compiler says so. `int` is 64-bit
+**by decision**, not by oversight (2026-10-24): it is this compiler's own ABI,
+so `unsigned int` is 64-bit too, `sizeof(int)` is 8, and an expression that
+overflows a 32-bit `int` in C simply does not overflow here. Making `int` 32
+bits is a real change to the data model (`movl`/`imull` + sign extension after
+every operation) and is listed as future work rather than pretended away. `main`
+must still be `int main(void)`; `argv` is not available to mycc programs yet.
 The optimizer has four pieces, and they are deliberately the ones that can be
 argued for in a paragraph: constant folding, constant-condition elimination,
 dead local stores, and expression temporaries kept in a register. There is still
@@ -193,14 +199,21 @@ That is not a translation step: `demo\4_pair.myc` is never turned into C. Both
 front ends produce the same tree (a `while` is an `AST_WHILE` with the same
 children, `say x` becomes `print_int(x)`), and the single code generator turns
 that tree into assembly. Byte-identical output is the proof, and `test.bat`
-checks it on every run rather than trusting this paragraph.
+checks it on every run rather than trusting this paragraph: `demo\4_pair` for
+the shape of the language, and `tests/myc/else.myc` + `tests/myc/literals.myc`
+for behaviour that is asserted (the `else` branch is actually taken; `0x10` is
+16, not 0 — that was BUG-029) against a hand-written C twin each.
 
 The language: `fn` / `end`, `let`, `say`, `if`/`else`, `while`, `return`, `and`,
 `or`, `not`, blocks terminated by `end` instead of `}`, no semicolons. Numbers
-and string literals only; every parameter is an `int`; `say` prints a number, or
-a string literal (or a `let` name initialised from one). The whole grammar is
-about 600 lines of `src/myc.c` — the statement forms are `parse_stmt`, and the
-expression ladder is `parse_expr` down to `parse_primary`.
+and string literals only; a number follows C's own literal rules (decimal,
+`0x` hex, leading-`0` octal, optional `u`/`l` suffix), because the lexer is
+shared with the C front end — and since 2026-10-24 both front ends also share
+the *meaning* (`util.c:parse_integer_literal()`), so `0x10` is 16 in either
+language. Every parameter is an `int`; `say` prints a number, or a string
+literal (or a `let` name initialised from one). The whole grammar is about 600
+lines of `src/myc.c` — the statement forms are `parse_stmt`, and the expression
+ladder is `parse_expr` down to `parse_primary`.
 
 ## A tiny example
 
@@ -278,8 +291,9 @@ CALL printf  [3:5]
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (80 checks)
+.\test.bat         # runs the positive + error test suites (81 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
+.\fuzz.bat         # generates 1000 random programs and compares mycc vs gcc
 .\showcase.bat     # end-to-end demo, returns 197
 .\demo.bat         # five-minute demo for a non-technical audience
 ```
@@ -290,22 +304,50 @@ cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 make               # builds ./mycc with gcc
 make test          # runs the positive + error test suites
 make difftest      # differential test: mycc vs the host compiler
+make fuzz          # 1000 generated programs: mycc vs the host compiler
 ./mycc example.c -o demo.s
 gcc -no-pie -o demo demo.s     # macOS: drop -no-pie
 ./demo; echo $?    # prints 197
 ```
 
 Set `CC=/path/to/gcc` to build with a specific compiler. On macOS the Makefile
-drops `-no-pie` and asks mycc for `--target=darwin`, so the emitted symbols
-carry the leading underscore Mach-O expects.
+drops `-no-pie`, asks mycc for `--target=darwin` (so the emitted symbols carry
+the leading underscore Mach-O expects) and passes `-arch x86_64`, because the
+backend emits x86-64 and current Macs are Apple Silicon — the output runs under
+Rosetta 2, which the CI job checks for explicitly.
 
 ## Continuous integration
 
 Every push and pull request is built and tested on Linux, Windows
 (MSYS2/UCRT64) and macOS via
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The Linux job also
-fails on any compiler warning (`-Werror`), and every job runs both the
-exit-code suite and the differential test.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml). The matrix is green on
+all three platforms (first green run: `40086581248`, 2026-10-24). The Linux job
+also fails on any compiler warning (`-Werror`); every job runs the exit-code
+suite, the differential test and a fuzz campaign (1000 generated programs on
+Linux, 200 on Windows, 100 on macOS); and each job publishes its `mycc` binary
+as a build artifact.
+
+## Random-program testing
+
+`tests/diff/` proves mycc agrees with gcc on four programs somebody wrote down,
+which only covers bugs somebody thought of. `tools/fuzz.c` generates programs
+nobody wrote — a fixed skeleton (helper function, two loops, an `if`/`else`)
+with every expression, literal, comparison and loop bound chosen at random —
+and `make fuzz` / `fuzz.bat` run them through the same check: mycc's output and
+gcc's must return the same exit code.
+
+```
+make fuzz                 # 1000 programs, seed 1
+make fuzz FUZZ_N=5000 FUZZ_SEED=7
+```
+
+Generation is deterministic in `(seed, index)`, and case N does not depend on
+the count, so a failing case is reproducible by number on any machine. Three
+invariants keep a mismatch meaningful: every generated program terminates, it
+contains no undefined behaviour (division only by literals, no uninitialised
+reads), and no expression overflows a 32-bit `int` — which matters because
+`mycc`'s `int` is 64-bit and an overflow would be C undefined behaviour rather
+than a compiler bug.
 
 ## Repository layout
 
@@ -315,8 +357,9 @@ exit-code suite and the differential test.
 | `tests/` | the positive suite (one program, one labelled exit status) and `tests/errors/` (programs that must be rejected, with the message expected) |
 | `tests/diff/` | programs compiled by **both** mycc and gcc and required to agree |
 | `tests/myc/` | the toy language's programs and their hand-written C twins |
+| `tools/fuzz.c` | the random-program generator behind `make fuzz` / `fuzz.bat` |
 | `demo/`, `demos/` | the demo kit and the example programs the walkthroughs compile |
-| `test.bat`, `difftest.bat`, `Makefile` | the two independent ways to run the suite (Windows batch and POSIX make) |
+| `test.bat`, `difftest.bat`, `fuzz.bat`, `Makefile` | the two independent ways to run the suite (Windows batch and POSIX make) |
 | `demo.bat`, `showcase.bat`, `tour.bat` | scripted walkthroughs of the compiler's output |
 
 This README is the repository's public document. The deeper engineering notes —
