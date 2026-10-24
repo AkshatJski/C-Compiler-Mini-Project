@@ -139,16 +139,16 @@ Still out of scope (by design): `float`/`double`, `long`/`short`, `enum`/
 `typedef`, aggregate initializer lists (`int a[2] = {1,2}`), `sizeof`, and the
 preprocessor. Structs are never passed or returned **by value** — take a
 pointer (`struct P *p`) instead, and the compiler says so. `int` remains
-64-bit (see the open Phase 1 decision in
-[ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too. `main` must still
+64-bit, so `unsigned int` is 64-bit too. `main` must still
 be `int main(void)`; `argv` is not available to mycc programs yet.
 The optimizer has four pieces, and they are deliberately the ones that can be
 argued for in a paragraph: constant folding, constant-condition elimination,
 dead local stores, and expression temporaries kept in a register. There is still
 no *global* register allocator - a value only lives in a register inside the
 expression that computes it - and that is a documented tradeoff rather than an
-oversight (see `ROADMAP.md` Phase 5 for the measurements and for what a
-liveness-based allocator would need first).
+oversight: copy propagation was measured as well and rejected (on a stack back
+end it saves nothing), and a liveness-based allocator needs an IR that does not
+exist yet.
 
 ## A second language (`--lang=myc`)
 
@@ -198,8 +198,9 @@ checks it on every run rather than trusting this paragraph.
 The language: `fn` / `end`, `let`, `say`, `if`/`else`, `while`, `return`, `and`,
 `or`, `not`, blocks terminated by `end` instead of `}`, no semicolons. Numbers
 and string literals only; every parameter is an `int`; `say` prints a number, or
-a string literal (or a `let` name initialised from one). The full grammar is in
-[instructions.md](instructions.md) section 7.
+a string literal (or a `let` name initialised from one). The whole grammar is
+about 600 lines of `src/myc.c` — the statement forms are `parse_stmt`, and the
+expression ladder is `parse_expr` down to `parse_primary`.
 
 ## A tiny example
 
@@ -277,7 +278,7 @@ CALL printf  [3:5]
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (78 checks)
+.\test.bat         # runs the positive + error test suites (80 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
 .\showcase.bat     # end-to-end demo, returns 197
 .\demo.bat         # five-minute demo for a non-technical audience
@@ -306,21 +307,20 @@ Every push and pull request is built and tested on Linux, Windows
 fails on any compiler warning (`-Werror`), and every job runs both the
 exit-code suite and the differential test.
 
-## Documentation
+## Repository layout
 
-- [instructions.md](instructions.md) — full manual: language, build/test/showcase, troubleshooting.
-- [DEMO.md](DEMO.md) — presenter script for a non-technical audience (60s / 3min /
-  5min cuts, the questions you will actually be asked, and what to do when
-  something breaks live).
-- [ROADMAP.md](ROADMAP.md) - planned phases: C-fidelity fixes, more language,
-  I/O and the ABI, optimization, diagnostics and tooling. Phases 1-4 are
-  complete. Phase 5 (optimization) is complete: constant folding,
-  constant-condition elimination, dead local stores and expression temporaries
-  in a register. Copy propagation was measured and rejected (it saves nothing on
-  a stack back end) and the liveness-based global allocator is staged with
-  Phase 7, because it needs an IR first - the roadmap records both decisions
-  with numbers. Phase 6 (diagnostics and tooling) is partly
-  done: caret snippets, the warning channel, the differential harness and the
-  opt/no-opt equivalence check are in; `--interpret` and the random program
-  generator are not. Phase 7 has `--version`, `--sign` and three-target output;
-  floating point and an SSA IR are still open.
+| Path | What lives there |
+|---|---|
+| `src/`, `include/` | the compiler: lexer, parser, semantic analysis, optimizer, code generator, diagnostics, and the `myc` front end |
+| `tests/` | the positive suite (one program, one labelled exit status) and `tests/errors/` (programs that must be rejected, with the message expected) |
+| `tests/diff/` | programs compiled by **both** mycc and gcc and required to agree |
+| `tests/myc/` | the toy language's programs and their hand-written C twins |
+| `demo/`, `demos/` | the demo kit and the example programs the walkthroughs compile |
+| `test.bat`, `difftest.bat`, `Makefile` | the two independent ways to run the suite (Windows batch and POSIX make) |
+| `demo.bat`, `showcase.bat`, `tour.bat` | scripted walkthroughs of the compiler's output |
+
+This README is the repository's public document. The deeper engineering notes —
+the decision log, the execution-flow map, the learning guide and the bug ledger —
+are maintained locally alongside the code and are deliberately not published;
+everything a user or a reviewer needs to build, test and judge this compiler is
+in this file.

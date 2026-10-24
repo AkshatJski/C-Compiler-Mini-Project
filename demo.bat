@@ -10,7 +10,7 @@ rem    2. can I see it work?            -> you type your name
 rem    3. is it doing anything?         -> same program, half the code
 rem    4. did you write it?             -> the binary says so
 rem    5. is it only C?                 -> a second language, identical output
-rem    6. can I trust it?               -> 33 programs, gcc, a bug ledger
+rem    6. can I trust it?               -> 35 programs, gcc, a bug ledger
 rem
 rem  Requirements: mycc.exe (run build.bat first) and MinGW gcc.
 rem  Or set CC to the full path of your gcc.
@@ -195,7 +195,7 @@ echo   ==========================================================
 echo.
 echo   Not because I say so. Because it is checked two ways:
 echo.
-echo   - 33 programs it must accept, 41 mistakes it must reject
+echo   - 35 programs it must accept, 41 mistakes it must reject
 echo   - and every answer compared against the world's most
 echo     widely used compiler, on the same source file
 echo.
@@ -207,7 +207,7 @@ if !TR!==0 (echo       tests        : all passed) else (echo       tests        
 if !DR!==0 (echo       versus gcc   : all agreed) else (echo       versus gcc   : DISAGREEMENT - see build\demo_diff.log)
 echo.
 echo   And when it got something wrong, it is written down, with
-echo   the commit it was found in: report.md, 23 entries.
+echo   the commit it was found in: report.md, 26 entries.
 echo.
 echo   Thank you.
 echo.
