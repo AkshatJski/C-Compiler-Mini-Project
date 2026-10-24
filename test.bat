@@ -289,5 +289,45 @@ if not "!MYCRC!"=="30" (
     set FAILED=1
     goto :eof
 )
-echo PASS: --lang=myc emits the same assembly as the C twin, and runs
+rem BUG-027: `if`/`else` must parse, and the else branch must actually *run*.
+rem The pair above proves the two front ends agree; this proves an else branch is
+rem reachable - which no test could see while both files of the pair lacked one.
+mycc.exe --lang=myc "tests\myc\else.myc" -o "build\myc_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: myc rejected if/else
+    set FAILED=1
+    goto :eof
+)
+mycc.exe "tests\myc\else.c" -o "build\c_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the C twin of the if/else test was rejected
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\myc_else.s" "build\c_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: myc and the C twin disagree about if/else
+    set FAILED=1
+    goto :eof
+)
+%CC% -o "build\myc_else.exe" "build\myc_else.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the if/else assembly did not link
+    set FAILED=1
+    goto :eof
+)
+"build\myc_else.exe" > "build\myc_else.stdout" 2>&1
+set "ELSERC=!errorlevel!"
+if not "!ELSERC!"=="8" (
+    echo FAIL: the if/else program returned !ELSERC! instead of 8
+    set FAILED=1
+    goto :eof
+)
+findstr /c:"else-branch" "build\myc_else.stdout" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the if/else program did not take the else branch
+    set FAILED=1
+    goto :eof
+)
+echo PASS: --lang=myc matches the C twin (if/else included) and runs
 goto :eof

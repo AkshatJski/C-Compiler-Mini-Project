@@ -1,0 +1,39 @@
+// `else` must parse *and* the else branch must be reachable (BUG-027).
+//
+// The lexer classifies `else` as a C keyword token, while the words myc
+// invented for itself (fn, let, say, end, and, or, not) arrive as identifiers.
+// A block used to stop only on the identifier spelling, so it swallowed `else`
+// and the parser reported "expected a statement (found 'else')".
+//
+// This file is compiled twice by test.bat / make test: as myc, and as its C
+// twin (else.c). The two assemblies must be byte-identical, and the program
+// must actually take the else branch.
+//
+// EXPECT: 8
+// EXPECT-OUT: else-branch
+
+fn pick(n)
+  if n > 5
+    return 1
+  else
+    return 2
+  end
+end
+
+fn main() -> int
+  let n = 3
+
+  if pick(n) == 2
+    say "else-branch"
+  else
+    say "if-branch"
+  end
+
+  if n > 5
+    say 5
+  else
+    say 8
+  end
+
+  return 8
+end

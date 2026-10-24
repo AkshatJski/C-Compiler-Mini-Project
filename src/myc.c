@@ -88,11 +88,24 @@ static int match(TokenType type)
 
 /* myc words that the C lexer reports as ordinary identifiers: fn, let, say,
  * end, and, or, not. Testing the text is enough -- there is no place in the
- * grammar where these can be anything else. */
+ * grammar where these can be anything else.
+ *
+ * `else` is the exception, and it is the bug this comment used to hide: it *is*
+ * a C keyword, so the lexer returns TOKEN_KEYWORD_ELSE for it and this function
+ * can never match it. Anything that must recognise `else` therefore has to ask
+ * BOTH spellings -- see at_else() (BUG-027). */
 static int word(const char *kw)
 {
     return p.current.type == TOKEN_IDENT && p.current.value != NULL &&
            strcmp(p.current.value, kw) == 0;
+}
+
+/* `else` arrives as a keyword token, because the C lexer owns that table; the
+ * words myc invented for itself arrive as identifiers. Both mean the same thing
+ * here, and a block has to stop at either one. */
+static int at_else(void)
+{
+    return check(TOKEN_KEYWORD_ELSE) || word("else");
 }
 
 static int match_word(const char *kw)
@@ -666,7 +679,7 @@ static ASTNode *parse_if(void)
     {
         return NULL;
     }
-    if (check(TOKEN_KEYWORD_ELSE))
+    if (at_else())
     {
         advance();
         node->right = parse_block_body();
@@ -711,7 +724,7 @@ static ASTNode *parse_return(void)
 
     /* `return` on its own is legal (a void function), and the tokens that can
      * follow it are exactly the ones that end a block. */
-    if (!check(TOKEN_EOF) && !word("end") && !word("else"))
+    if (!check(TOKEN_EOF) && !word("end") && !at_else())
     {
         node->left = parse_expr();
         if (node->left == NULL)
@@ -817,13 +830,14 @@ static ASTNode *parse_stmt(void)
 /* A block stops at `end`, `else` or end-of-file and does NOT consume the
  * terminator: whoever opened the block closes it. That single rule is what
  * makes nested `if`/`while` bodies match the right `end` without indentation
- * or brace counting. */
+ * or brace counting. Note `at_else()` rather than `word("else")`: the latter
+ * never matches, because `else` is a C keyword token (BUG-027). */
 static ASTNode *parse_block_body(void)
 {
     ASTNode *block = ast_node(AST_BLOCK, p.current.line, p.current.col);
     ASTNode *head = NULL;
 
-    while (!check(TOKEN_EOF) && !word("end") && !word("else"))
+    while (!check(TOKEN_EOF) && !word("end") && !at_else())
     {
         ASTNode *stmt = parse_stmt();
         if (stmt == NULL)

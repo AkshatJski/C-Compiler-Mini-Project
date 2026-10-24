@@ -119,7 +119,21 @@ test: $(TARGET)
 		|| { echo "FAIL: the C twin of the toy program was rejected"; exit 1; }; \
 	cmp -s "$(TESTDIR)/pair_myc.s" "$(TESTDIR)/pair_c.s" \
 		|| { echo "FAIL: myc and the C twin emitted different assembly"; exit 1; }; \
-	echo "PASS: --lang=myc emits the same assembly as the C twin"
+	./$(TARGET) --lang=myc tests/myc/else.myc -o "$(TESTDIR)/myc_else.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: myc rejected if/else (BUG-027)"; exit 1; }; \
+	./$(TARGET) tests/myc/else.c -o "$(TESTDIR)/c_else.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: the C twin of the if/else test was rejected"; exit 1; }; \
+	cmp -s "$(TESTDIR)/myc_else.s" "$(TESTDIR)/c_else.s" \
+		|| { echo "FAIL: myc and the C twin disagree about if/else"; exit 1; }; \
+	$(CC) $(LDFLAGS) -o "$(TESTDIR)/myc_else" "$(TESTDIR)/myc_else.s" \
+		|| { echo "FAIL: the if/else assembly did not link"; exit 1; }; \
+	"$(TESTDIR)/myc_else" > "$(TESTDIR)/myc_else.stdout" 2>&1; rc=$$?; \
+	if [ "$$rc" != "8" ]; then \
+		echo "FAIL: the if/else program returned $$rc instead of 8"; exit 1; \
+	fi; \
+	grep -q "else-branch" "$(TESTDIR)/myc_else.stdout" \
+		|| { echo "FAIL: the if/else program did not take the else branch"; exit 1; }; \
+	echo "PASS: --lang=myc matches the C twin (if/else included) and runs"
 	@echo "All tests passed"
 
 # Differential testing: compile tests/diff/*.c with mycc *and* with the host
