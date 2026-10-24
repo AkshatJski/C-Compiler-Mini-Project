@@ -656,7 +656,7 @@ single most useful finding of the whole project (§12, BUG-030/031).
 
 ### 11.2 Repository
 
-- 34 commits, 135 tracked files, branches `main` and `Akshat` both green.
+- 36 commits, 136 tracked files, branches `main` and `Akshat` both green.
 - `README.md` and everything in `docs/` except three working notes are published;
   `docs\decision.md`, `docs\learn.md` and `docs\instructions.md` are local by
   policy (D8).
