@@ -28,9 +28,10 @@ learn.docs
 # agreement). Un-ignore this line to publish it as a showcase artefact.
 report.md
 
-# Project report working copy (college submission material, built from this
-# repository's own evidence - not part of the repository's public surface).
-REPORT-DRAFT.md
+# The project report (REPORT-DRAFT.md) is published on purpose - un-ignored
+# 2026-10-24 at the author's request. It is the submission artefact, and every
+# number in it is reproducible from this repository. The engineering notes it
+# draws on (decision.md, Flow.md, learn.md, report.md) stay local.
 
 # Editor / OS cruft
 .vscode/
