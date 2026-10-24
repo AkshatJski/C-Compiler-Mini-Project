@@ -883,19 +883,18 @@ static ASTNode *parse_primary(void)
         int line = parser.current.line;
         int col = parser.current.col;
         node = ast_node(AST_INT_LIT, line, col);
-        errno = 0;
-        char *end = NULL;
-        long long value = strtoll(parser.current.value, &end, 0);
-        if (errno == ERANGE)
+        long long value = 0;
+        switch (parse_integer_literal(parser.current.value, &value))
         {
+        case INT_LITERAL_OK:
+            break;
+        case INT_LITERAL_RANGE:
             report_error(line, col, "integer literal '%s' out of range",
                          parser.current.value);
             return NULL;
-        }
-        /* The lexer already validates the digits; this guards the hand-off so
-         * a malformed literal can never silently become 0 (BUG-008). */
-        if (end == parser.current.value || *end != '\0')
-        {
+        default:
+            /* The lexer already validates the digits; this guards the hand-off
+             * so a malformed literal can never silently become 0 (BUG-008). */
             report_error(line, col, "invalid integer literal '%s'",
                          parser.current.value);
             return NULL;

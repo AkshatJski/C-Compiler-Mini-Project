@@ -9,6 +9,21 @@ void *xcalloc(size_t count, size_t size);
 void *xrealloc(void *ptr, size_t size);
 char *xstrdup(const char *s);
 
+/* Integer-literal hand-off: text from the lexer (digits only, any U/L suffix
+ * already dropped) to a value, with C's rules -- base 0, so `0x10` is 16 and
+ * `010` is 8. One implementation, used by both front ends: the toy language
+ * inherits C's literal syntax from the shared lexer, so it has to inherit the
+ * meaning too (BUG-029). Three outcomes, because "too large" and "not a
+ * number" deserve different diagnostics. */
+typedef enum
+{
+    INT_LITERAL_OK = 0,
+    INT_LITERAL_RANGE,
+    INT_LITERAL_MALFORMED
+} IntLiteralStatus;
+
+IntLiteralStatus parse_integer_literal(const char *text, long long *out);
+
 void set_source_path(const char *path);
 /* Phase 6: the source text, borrowed (not copied) for diagnostics. Passing
  * NULL disables the caret snippet, which is what the token/AST dumps do. */

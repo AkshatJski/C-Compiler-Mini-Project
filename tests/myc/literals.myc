@@ -1,0 +1,41 @@
+// literals.myc -- numbers mean what they mean in C (BUG-029).
+//
+// The lexer is shared, so `myc` inherits C's integer-literal *syntax*: hex,
+// octal and a U/L suffix all reach the parser. The parser used to read that
+// text with base 10, so `0x10` quietly became 0. Both front ends now go
+// through one hand-off, util.c:parse_integer_literal().
+//
+// This file is compiled twice (as myc, and as its C twin literals.c) and the
+// two assemblies must be byte-identical; the program must also return 42.
+//
+// EXPECT: 42
+// EXPECT-OUT: literals-ok
+
+fn main() -> int
+  if 0x10 != 16
+    return 1
+  end
+
+  if 010 != 8
+    return 2
+  end
+
+  if 0xFF != 255
+    return 3
+  end
+
+  if 0777 != 511
+    return 4
+  end
+
+  if 42u != 42
+    return 5
+  end
+
+  if 0 != 0
+    return 6
+  end
+
+  say "literals-ok"
+  return 42
+end
