@@ -17,7 +17,11 @@ if "%CC%"=="" (
     set CC=gcc
 )
 
-%CC% -std=c99 -O2 -Wall -Wextra -Wpedantic -Iinclude -o mycc.exe src\main.c src\lexer.c src\parser.c src\symtab.c src\semantic.c src\codegen.c src\util.c src\dump.c
+rem A glob, not a hand-written file list: a list is exactly what went stale
+rem when the toy front end (src\myc.c) and the optimizer pass (src\opt.c)
+rem were added, and the failure was a linker error rather than a missing
+rem compile. Let gcc name the files (BUG-028).
+%CC% -std=c99 -O2 -Wall -Wextra -Wpedantic -Iinclude -o mycc.exe src\*.c
 if errorlevel 1 goto :fail
 
 echo.
