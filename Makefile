@@ -34,7 +34,7 @@ else
   TARGETFLAG :=
 endif
 
-.PHONY: all clean test difftest
+.PHONY: all clean test difftest fuzz
 
 all: $(TARGET)
 
@@ -44,6 +44,25 @@ $(TARGET): $(OBJS)
 $(OBJDIR)/%.o: src/%.c
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# --- Random-program differential testing (Phase 6) --------------------------
+# tests/diff/ holds four programs somebody thought of. tools/fuzz.c generates
+# programs nobody thought of, and difftest.sh checks them the same way: mycc's
+# output and gcc's must return the same exit code. Deterministic in the seed,
+# so a failing case is reproducible by number.
+FUZZ_N    ?= 1000
+FUZZ_SEED ?= 1
+FUZZDIR   ?= $(OBJDIR)/fuzz
+
+$(OBJDIR)/fuzzgen: tools/fuzz.c
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) -o $@ $<
+
+fuzz: $(TARGET) $(OBJDIR)/fuzzgen
+	@rm -rf $(FUZZDIR) && mkdir -p $(FUZZDIR)
+	@./$(OBJDIR)/fuzzgen $(FUZZ_N) $(FUZZDIR) $(FUZZ_SEED)
+	@MYCC=./$(TARGET) CC="$(CC)" TARGETFLAG="$(TARGETFLAG)" LDFLAGS="$(LDFLAGS)" \
+		SRCDIR=$(FUZZDIR) QUIET=1 OUT=$(FUZZDIR)/out sh difftest.sh
 
 test: $(TARGET)
 	@mkdir -p $(TESTDIR)
@@ -159,5 +178,5 @@ difftest: $(TARGET)
 		sh difftest.sh
 
 clean:
-	rm -f $(TARGET) $(OBJS)
-	-rmdir $(OBJDIR) 2>/dev/null || true
+	rm -f $(TARGET) $(OBJS) $(OBJDIR)/fuzzgen
+	-rm -rf $(OBJDIR) 2>/dev/null || true

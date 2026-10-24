@@ -33,8 +33,16 @@ if not exist mycc.exe (
 
 if not exist build mkdir build
 set "FAILED=0"
+set "COUNT=0"
+rem SRCDIR lets the fuzz run reuse this harness: fuzz.bat generates random
+rem programs into build\fuzz and points SRCDIR at it.
+if "%SRCDIR%"=="" set "SRCDIR=tests\diff"
+if not exist "%SRCDIR%\*.c" (
+    echo no programs found in %SRCDIR%
+    exit /b 1
+)
 
-for %%t in (tests\diff\*.c) do call :compare "%%t"
+for %%t in (%SRCDIR%\*.c) do call :compare "%%t"
 
 if "%FAILED%"=="1" (
     echo.
@@ -42,7 +50,11 @@ if "%FAILED%"=="1" (
     exit /b 1
 )
 echo.
-echo All differential tests passed
+if defined QUIET (
+    echo PASS: all %COUNT% programs agreed with the reference compiler
+) else (
+    echo All differential tests passed
+)
 exit /b 0
 
 :compare
@@ -50,6 +62,7 @@ set "T=%~1"
 set "BASE=%~n1"
 set "MYCC_EXIT="
 set "REF_EXIT="
+set /a COUNT+=1
 
 mycc.exe --target=windows "%T%" -o "build\diff_%BASE%.s" > "build\diff_%BASE%.mycc.log" 2>&1
 if errorlevel 1 (
@@ -86,5 +99,5 @@ if not "!MYCC_EXIT!"=="!REF_EXIT!" (
     goto :eof
 )
 
-echo PASS: %T% ^(both returned !MYCC_EXIT!^)
+if not defined QUIET echo PASS: %T% ^(both returned !MYCC_EXIT!^)
 goto :eof
