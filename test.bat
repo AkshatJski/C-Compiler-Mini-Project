@@ -27,6 +27,7 @@ for %%t in (tests\errors\*.c) do call :error "%%t"
 call :output_file_contract
 call :silence_contract
 call :sign_contract
+call :myc_contract
 
 if "%FAILED%"=="1" (
     echo.
@@ -215,4 +216,43 @@ if not errorlevel 1 (
     goto :eof
 )
 echo PASS: --sign embeds the provenance string, and only on request
+goto :eof
+
+rem --lang=myc is a second front end, not a translator: it builds the same AST,
+rem so it must emit byte-identical assembly to the C twin of the same program.
+rem That claim is the entire reason the toy language exists, so it is executed
+rem here rather than described in a README.
+:myc_contract
+mycc.exe --lang=myc demo\4_pair.myc -o "build\pair_myc.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the myc front end rejected a valid program
+    set FAILED=1
+    goto :eof
+)
+mycc.exe demo\4_pair.c -o "build\pair_c.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the C twin of the toy program was rejected
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\pair_myc.s" "build\pair_c.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: myc and the C twin emitted different assembly
+    set FAILED=1
+    goto :eof
+)
+%CC% -o "build\pair_myc.exe" "build\pair_myc.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: the myc assembly did not link
+    set FAILED=1
+    goto :eof
+)
+"build\pair_myc.exe" >nul 2>&1
+set "MYCRC=!errorlevel!"
+if not "!MYCRC!"=="30" (
+    echo FAIL: the myc program returned !MYCRC! instead of 30
+    set FAILED=1
+    goto :eof
+)
+echo PASS: --lang=myc emits the same assembly as the C twin, and runs
 goto :eof

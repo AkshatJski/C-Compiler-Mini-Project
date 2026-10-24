@@ -5,6 +5,7 @@
 #include "codegen.h"
 #include "dump.h"
 #include "lexer.h"
+#include "myc.h"
 #include "parser.h"
 #include "semantic.h"
 #include "util.h"
@@ -12,10 +13,16 @@
 static void usage(void)
 {
     fprintf(stderr,
-            "Usage: mycc <source.c> [-o <output.s>] "
+            "Usage: mycc <source> [-o <output.s>] [--lang=c|myc] "
             "[--target=linux|windows|darwin] [--no-opt] [--sign] [-w]\n");
     fprintf(stderr,
             "  Compiles a C-subset program to AMD64 AT&T assembly.\n");
+    fprintf(stderr,
+            "  --lang=myc     parse the toy language instead of C; both\n");
+    fprintf(stderr,
+            "                 front ends produce the same AST, so equivalent\n");
+    fprintf(stderr,
+            "                 programs emit identical assembly\n");
     fprintf(stderr,
             "  --target selects the assembler flavor; defaults to the\n");
     fprintf(stderr,
@@ -81,6 +88,10 @@ int main(int argc, char **argv)
     int dump_tokens_flag = 0;
     int dump_ast_flag = 0;
     int version_flag = 0;
+    /* Phase 8 (toy language): which front end reads the source. The default is
+     * C; --lang=myc selects the toy grammar. Everything after the parser is
+     * shared, which is the entire point of the exercise. */
+    int lang_myc = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
@@ -109,6 +120,17 @@ int main(int argc, char **argv)
             g_sign = 1;
         } else if (strcmp(argv[i], "--version") == 0) {
             version_flag = 1;
+        } else if (strncmp(argv[i], "--lang=", 7) == 0) {
+            const char *lang = argv[i] + 7;
+            if (strcmp(lang, "myc") == 0) {
+                lang_myc = 1;
+            } else if (strcmp(lang, "c") == 0) {
+                lang_myc = 0;
+            } else {
+                fprintf(stderr,
+                        "error: unknown language '%s' (use c or myc)\n", lang);
+                return 1;
+            }
         } else if (strncmp(argv[i], "--target=", 9) == 0) {
             const char *target_name = argv[i] + 9;
             if (strcmp(target_name, "linux") == 0) {
@@ -175,7 +197,7 @@ int main(int argc, char **argv)
         return error_count() > 0 ? 1 : 0;
     }
 
-    ASTNode *ast = parse_program(&lexer);
+    ASTNode *ast = lang_myc ? myc_parse_program(&lexer) : parse_program(&lexer);
     if (ast == NULL || error_count() > 0) {
         fprintf(stderr, "%s: compilation aborted during parsing\n", source_path);
         free(source);

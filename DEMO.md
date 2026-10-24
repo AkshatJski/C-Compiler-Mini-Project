@@ -25,7 +25,7 @@ that follows beats it for a non-technical audience.
 
 ---
 
-## The three-minute version (scenes 1–3)
+## The three-minute version (scenes 1–3, then 5)
 
 | Time | Command | What to say |
 |---|---|---|
@@ -33,7 +33,7 @@ that follows beats it for a non-technical audience.
 | 0:20 | `demo.bat` scene 1 | "That text came from `printf` — inside the C library. To use it, my compiler had to obey the same calling rules Microsoft's compiler obeys." |
 | 0:50 | scene 2 | "Your turn. Type your name." *(let them)* "A local array, a library call, three strings, and the real ABI." |
 | 1:40 | scene 3 | "Same program, compiled twice. The right-hand one has the optimizer off. I haven't run either." *(run both)* "Both returned 118. The optimizer removed work, not behaviour." |
-| 2:30 | scene 5 | "33 programs it must accept, 41 mistakes it must reject, and every answer checked against the compiler the world actually uses." |
+| 2:20 | scene 5 | "It's not only C. I designed a second language." *(compile both, show `FC: no differences encountered`)* "Identical assembly, byte for byte — not translated into C first." |
 
 Stop there. If they ask "but is it really yours", go to scene 4.
 
@@ -59,6 +59,31 @@ If you only get one more minute, spend it here.
 
 ---
 
+## Scene 5 — the one technical people will remember
+
+Two files, one program. `demo\4_pair.myc` is written in a language I designed;
+`demo\4_pair.c` is the same program in C. The demo compiles both and then runs
+`fc /b` on the two assembly files:
+
+```
+FC: no differences encountered
+```
+
+Say this, and stop talking:
+
+> "Identical, byte for byte. The toy language is not translated into C on the
+> way — both front ends build the same syntax tree and one back end turns that
+> tree into assembly. A translator would have produced *different* assembly.
+> That's the difference between a language and a dialect."
+
+The toy language is deliberately small: `fn`, `let`, `say`, `if`/`else`,
+`while`, `return`, `end`, `and`, `or`, `not`. Numbers and string literals.
+Every parameter is an int, and it has no arrays, pointers or structs — those
+belong to the C front end, and the point of the demo is the back end, not the
+toy. `instructions.md` has the full grammar.
+
+---
+
 ## Questions you will actually be asked
 
 | Question | Answer |
@@ -67,7 +92,9 @@ If you only get one more minute, spend it here.
 | "Is it as good as a real compiler?" | No, and it says so. No optimizer beyond folding and dead branches; no floats; no preprocessor; structs are never passed by value. `ROADMAP.md` lists exactly where it stops. |
 | "How long did it take?" | *(answer honestly — the commit history is public and matches)* |
 | "Who uses it?" | Nobody. It's a teaching artefact — a glass box, not a product. That's the point. |
-| "Could it compile a real program?" | It compiles programs of a few hundred lines that use pointers, arrays, structs, loops and `printf`. It cannot compile `#include <stdio.h>` — mycc has no preprocessor; the built-ins replace it. |
+| "Could it compile a real program?" | It compiles programs of a few hundred lines that use pointers, arrays, structs, loops and `printf`. It cannot compile `#include <stdio.h>` - mycc has no preprocessor; the built-ins replace it. |
+| "Did you write your own language too?" | Yes - `demo\4_pair.myc`, and it compiles to byte-identical assembly with the C version. Scene 5 shows the `fc /b` output rather than claiming it. |
+| "So the two languages are the same thing with different words?" | No. Different grammar (no semicolons, no braces, `end` instead of `}`), different keywords, and the toy front end decides `say`'s output form itself. What they share is the *tree* they produce - which is exactly why the assembly matches. |
 | "Did you have to write the CPU part too?" | No — x86-64 is a fixed language, and I emit it as text. That's why two different machines can both run the same program. |
 | "What happens if I write garbage?" | It refuses, with a message that points at the line and column. Try it live — that's a good moment, not a bad one. |
 

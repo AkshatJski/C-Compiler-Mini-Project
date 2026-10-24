@@ -1,7 +1,7 @@
 CC       ?= gcc
 CFLAGS    = -std=c99 -O2 -Wall -Wextra -Wpedantic -g
 CFLAGS   += -Iinclude
-SRCS      = src/main.c src/lexer.c src/parser.c src/symtab.c \
+SRCS      = src/main.c src/lexer.c src/parser.c src/myc.c src/symtab.c \
             src/semantic.c src/codegen.c src/util.c src/dump.c
 OBJDIR    = build
 OBJS      = $(SRCS:src/%.c=$(OBJDIR)/%.o)
@@ -96,6 +96,13 @@ test: $(TARGET)
 		echo "FAIL: -w did not silence the warning channel"; exit 1; \
 	fi; \
 	echo "PASS: -w silences warnings without failing the build"
+	@./$(TARGET) --lang=myc demo/4_pair.myc -o "$(TESTDIR)/pair_myc.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: the myc front end rejected a valid program"; exit 1; }; \
+	./$(TARGET) demo/4_pair.c -o "$(TESTDIR)/pair_c.s" >/dev/null 2>&1 \
+		|| { echo "FAIL: the C twin of the toy program was rejected"; exit 1; }; \
+	cmp -s "$(TESTDIR)/pair_myc.s" "$(TESTDIR)/pair_c.s" \
+		|| { echo "FAIL: myc and the C twin emitted different assembly"; exit 1; }; \
+	echo "PASS: --lang=myc emits the same assembly as the C twin"
 	@echo "All tests passed"
 
 # Differential testing: compile tests/diff/*.c with mycc *and* with the host

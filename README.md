@@ -115,7 +115,7 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
 - **Tests:** 33 positive programs (`tests/01…33`) and 41 rejection tests
-  (`tests/errors/`), 77 checks in total — covering pointers (`12`), arrays
+  (`tests/errors/`), 78 checks in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
@@ -136,10 +136,61 @@ pointer (`struct P *p`) instead, and the compiler says so. `int` remains
 64-bit (see the open Phase 1 decision in
 [ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too. `main` must still
 be `int main(void)`; `argv` is not available to mycc programs yet.
-The optimizer is deliberately shallow so far — constant folding and
-constant-condition elimination only. There is no register allocator: every
-expression still goes through the stack machine, and that is a documented
-tradeoff rather than an oversight (see `ROADMAP.md` Phase 5).
+The optimizer is deliberately shallow so far - constant folding,
+constant-condition elimination and constant operands only. There is no register
+allocator: every expression still goes through the stack machine, and that is a
+documented tradeoff rather than an oversight (see `ROADMAP.md` Phase 5).
+
+## A second language (`--lang=myc`)
+
+`mycc` has two front ends and one back end. The second reads **myc**, a small
+language with its own grammar, and lowers it to the *same* AST the C front end
+builds:
+
+```
+fn twice(n)
+  return n * 2
+end
+
+fn main() -> int
+  let total = 0
+  let i = 1
+  let name = "myc"
+
+  while i <= 5
+    total = total + twice(i)
+    i = i + 1
+  end
+
+  say "hello from "
+  say name
+  say total
+
+  if total == 30 and not 0
+    say "correct"
+  end
+
+  return total
+end
+```
+
+```
+mycc --lang=myc demo\4_pair.myc -o build\pair_myc.s
+mycc            demo\4_pair.c   -o build\pair_c.s
+fc /b build\pair_myc.s build\pair_c.s      # FC: no differences encountered
+```
+
+That is not a translation step: `demo\4_pair.myc` is never turned into C. Both
+front ends produce the same tree (a `while` is an `AST_WHILE` with the same
+children, `say x` becomes `print_int(x)`), and the single code generator turns
+that tree into assembly. Byte-identical output is the proof, and `test.bat`
+checks it on every run rather than trusting this paragraph.
+
+The language: `fn` / `end`, `let`, `say`, `if`/`else`, `while`, `return`, `and`,
+`or`, `not`, blocks terminated by `end` instead of `}`, no semicolons. Numbers
+and string literals only; every parameter is an `int`; `say` prints a number, or
+a string literal (or a `let` name initialised from one). The full grammar is in
+[instructions.md](instructions.md) section 7.
 
 ## A tiny example
 
@@ -217,7 +268,7 @@ CALL printf  [3:5]
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (77 checks)
+.\test.bat         # runs the positive + error test suites (78 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
 .\showcase.bat     # end-to-end demo, returns 197
 .\demo.bat         # five-minute demo for a non-technical audience

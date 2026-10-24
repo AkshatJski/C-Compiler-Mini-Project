@@ -1269,7 +1269,7 @@ stages** using the new dump flags:
 5. **Stage 4, codegen**: `mycc demos\simple.c` prints the assembly; walk
    the frame setup, the `push/pop` expression engine, and `call`.
 6. End to end: `example.c` → 197, plus the full test suite, then a
-   by-file line count of the ~6,600-line hand-written compiler.
+   by-file line count of the ~8,000-line hand-written compiler (9 files).
 
 Great talking point: the same tree you can print with `--dump-ast` is
 exactly what the code generator walks to emit assembly.
@@ -1293,7 +1293,7 @@ exactly what the code generator walks to emit assembly.
 - **Show real output instead**: `mycc.exe tests\26_hello_world.c -o
   build\hello.s`, link it, and it prints `Hello, world!` — the same program,
   now talking to the CRT through the platform ABI.
-- **Read the whole compiler**: `src/` is ~6,600 lines across 8 files.
+- **Read the whole compiler**: `src/` is ~8,100 lines across 9 files.
   `src/codegen.c` is the shortest path to "aha" — it is just a walk over
   the syntax tree emitting instructions.
 - **Catch a mistake live**: feed mycc a broken program and show the
@@ -1302,3 +1302,103 @@ exactly what the code generator walks to emit assembly.
   sugar (`+=`, `a++`, `!a`, `-b`); `mycc --dump-ast demos\desugar.c`
   prints the simplified tree the compiler actually uses. `demos/broken.c`
   is pre-filled with two errors to demonstrate semantic analysis.
+
+---
+
+## 11. The toy language (`--lang=myc`)
+
+`mycc` contains two front ends and one back end. `--lang=myc` selects the second
+one, which reads a small language of its own design and produces the **same
+AST** the C front end produces.
+
+```
+fn twice(n)
+  return n * 2
+end
+
+fn main() -> int
+  let total = 0
+  let i = 1
+  let name = "myc"
+
+  while i <= 5
+    total = total + twice(i)
+    i = i + 1
+  end
+
+  say "hello from "
+  say name
+  say total
+
+  if total == 30 and not 0
+    say "correct"
+  end
+
+  return total
+end
+```
+
+```
+mycc --lang=myc demo\4_pair.myc -o build\pair_myc.s
+mycc            demo\4_pair.c   -o build\pair_c.s
+fc /b build\pair_myc.s build\pair_c.s      ->  FC: no differences encountered
+gcc -o build\pair_myc.exe build\pair_myc.s
+build\pair_myc.exe                          ->  hello from / myc / 30 / correct
+```
+
+The two `.s` files are byte-identical. That is the point of the exercise, and
+`test.bat` / `make test` check it on every run: a second front end that produced
+*different* assembly would be a translator with extra steps, not a language.
+
+### 11.1 Syntax
+
+```
+program    := { function }
+function   := 'fn' NAME '(' [ NAME { ',' NAME } ] ')' [ '->' type ] block 'end'
+type       := 'int' | 'void'                 (default: int)
+block      := { statement }
+statement  := 'let' NAME '=' expression
+            | 'say' expression
+            | 'if' expression block [ 'else' block ] 'end'
+            | 'while' expression block 'end'
+            | 'return' [ expression ]
+            | NAME '=' expression
+            | NAME '(' [ expression { ',' expression } ] ')'
+expression := or { ('or' | '||') or }
+or         := and { ('and' | '&&') and }
+and        := equality { ('==' | '!=') equality }
+equality   := relational { ('<' | '<=' | '>' | '>=') relational }
+relational := additive { ('+' | '-') additive }
+additive   := multiplicative { ('*' | '/' | '%') multiplicative }
+multiplic. := unary
+unary      := ('-' | '!' | 'not') unary | primary
+primary    := NUMBER | STRING | NAME | NAME '(' args ')' | '(' expression ')'
+```
+
+Rules that are not syntax:
+
+- **Newlines do not matter, `end` does.** There are no semicolons and no braces;
+  an expression stops when the next token cannot continue it.
+- **Parameters are always `int`.** The toy language has no type syntax for
+  parameters, which is why it also has no arrays, pointers or structs — those
+  live in the C front end, and duplicating them would only create a second place
+  for them to be wrong.
+- **`let` infers one type.** A string literal initialiser makes a `char *`;
+  everything else is an `int`.
+- **`say` decides by operand.** A string literal, or a `let` name initialised
+  from one, prints via `print_str` + `print_endl`; anything else prints via
+  `print_int`, which already ends its line.
+- **`not x` is `x == 0`, `-x` is `0 - x`.** Same desugarings as the C front end,
+  so both languages share one implementation of each meaning.
+- **No compound assignment** (`x += 1`). The C front end desugars that into an
+  assignment whose two sides *share* the lvalue node; reproducing the aliasing
+  contract in a toy language is a second copy of a subtle rule with no teaching
+  value.
+
+### 11.2 What it demonstrates
+
+| Claim | How it is checked |
+|---|---|
+| It is a real front end, not a translator | `fc /b` on the two `.s` files: identical bytes |
+| It shares semantic analysis and codegen unchanged | `--dump-ast` shows the same tree; only `src/myc.c` and one branch in `main.c` are new |
+| It refuses bad input with a real diagnostic | feed it C (`int main(void) { ... }`) and it says `expected 'fn' at the start of a declaration (found 'int')`, with a caret |

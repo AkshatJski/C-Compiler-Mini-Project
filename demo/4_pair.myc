@@ -1,0 +1,32 @@
+// 4_pair.myc -- the toy language, in its entirety.
+//
+//   mycc --lang=myc demo\4_pair.myc -o build\pair_myc.s   (this language)
+//   mycc            demo\4_pair.c   -o build\pair_c.s     (the same, in C)
+//
+// The two .s files are byte-identical: not translated to C on the way, but a
+// second front end building the same tree for the same back end.
+
+fn twice(n)
+  return n * 2
+end
+
+fn main() -> int
+  let total = 0
+  let i = 1
+  let name = "myc"
+
+  while i <= 5
+    total = total + twice(i)
+    i = i + 1
+  end
+
+  say "hello from "
+  say name
+  say total
+
+  if total == 30 and not 0
+    say "correct"
+  end
+
+  return total
+end

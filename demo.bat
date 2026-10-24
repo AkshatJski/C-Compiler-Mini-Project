@@ -9,7 +9,8 @@ rem    1. what does it do?              -> it prints a sentence
 rem    2. can I see it work?            -> you type your name
 rem    3. is it doing anything?         -> same program, half the code
 rem    4. did you write it?             -> the binary says so
-rem    5. can I trust it?               -> 33 programs, gcc, a bug ledger
+rem    5. is it only C?                 -> a second language, identical output
+rem    6. can I trust it?               -> 33 programs, gcc, a bug ledger
 rem
 rem  Requirements: mycc.exe (run build.bat first) and MinGW gcc.
 rem  Or set CC to the full path of your gcc.
@@ -147,12 +148,49 @@ echo.
 pause
 
 rem ------------------------------------------------------------
-rem Scene 5
+rem Scene 5 -- the toy language
 rem ------------------------------------------------------------
 cls
 echo.
 echo   ==========================================================
-echo    5.  Can you trust it?
+echo    5.  Same compiler. Different language.
+echo   ==========================================================
+echo.
+echo   The part that C programmers do not expect: my compiler
+echo   reads two languages. This is one I designed myself.
+echo.
+type demo\4_pair.myc
+echo.
+echo   Compile it -- and compile the C version of the same program:
+echo.
+mycc.exe --lang=myc demo\4_pair.myc -o build\pair_myc.s >nul 2>&1
+mycc.exe demo\4_pair.c -o build\pair_c.s >nul 2>&1
+fc /b build\pair_myc.s build\pair_c.s
+echo.
+echo   "No differences encountered." The two files are identical,
+echo   byte for byte. The toy language is not translated into C:
+echo   both front ends build the same tree, and one back end turns
+echo   that tree into assembly.
+echo.
+echo   Run the toy-language program:
+echo      ----------------------------------------------
+%CC% -o build\pair_myc.exe build\pair_myc.s >nul 2>&1
+build\pair_myc.exe
+echo      ----------------------------------------------
+echo.
+echo   It returned 30. That number was computed by a program that
+echo   never mentions C, using the same code generator that compiled
+echo   everything else this evening.
+echo.
+pause
+
+rem ------------------------------------------------------------
+rem Scene 6
+rem ------------------------------------------------------------
+cls
+echo.
+echo   ==========================================================
+echo    6.  Can you trust it?
 echo   ==========================================================
 echo.
 echo   Not because I say so. Because it is checked two ways:
