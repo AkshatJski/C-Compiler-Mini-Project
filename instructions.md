@@ -401,9 +401,13 @@ comparisons, …) can be added without touching the error path.
   prints the tree after desugaring.
 
 - **Stack-machine expression codegen.** Binary operators evaluate the left
-  operand, push it, evaluate the right operand, pop the left back into a
-  scratch register, and apply the operation. This is simple and handles
-  arbitrarily deep expressions.
+  operand, park it, evaluate the right operand, and apply the operation. The
+  parking is a register (`%r10`) when one is free and a stack push when it is
+  not, so `a + b` becomes `movq %rax, %r10` ... `addq %r10, %rax` instead of a
+  `pushq`/`popq` pair. This is still a stack machine - it handles arbitrarily
+  deep expressions and spills to the machine stack when an expression needs more
+  than one temporary - and `--no-opt` restores the pure push/pop version
+  instruction for instruction.
 
 - **Comparison operators** compile to `cmpq` + `setcc` + `movzbq`, which
   produces a normal `0`/`1` value. Signed operands use
@@ -757,7 +761,7 @@ proves the Phase 4 calling convention by printing through the C runtime.
 ```
 
 Five scenes aimed at someone who does not write code: it prints, it takes their
-name and prints it back, it compiles one program twice and shows 39 lines of
+name and prints it back, it compiles one program twice and shows 38 lines of
 assembly against 81 with identical behaviour, it proves authorship with
 `--version` and `--sign` (the finished `.exe` carries a mycc string), and it
 finishes by running both test suites and reporting the verdict.
@@ -786,12 +790,13 @@ Notes:
 - `-w` silences warnings (errors are unaffected), e.g.
   `mycc.exe -w src.c -o out.s`.
 - `--no-opt` turns off the Phase 5 optimizer (constant folding,
-  constant-condition elimination and constant operands). Useful for showing what
+  constant-condition elimination, dead local stores, and expression temporaries
+  kept in a register). Useful for showing what
   the optimizer actually did: compile the same file twice and compare the
   assembly, e.g. `mycc.exe demo.c -o opt.s` and `mycc.exe --no-opt demo.c -o
-  plain.s`. The program behaves identically either way — that is the invariant
-  the test suite enforces by running every program in `tests\` through both
-  paths.
+  plain.s`. The program behaves identically either way - that is the invariant
+  the test suite enforces by building every program in `tests\` both ways and
+  requiring the same exit status and the same bytes on stdout.
 - `--version` prints what the compiler is, which targets it can emit and whether
   the optimizer is on, then exits without needing a source file.
 - `--sign` embeds one provenance string in the program's read-only data, so the
@@ -1267,9 +1272,11 @@ stages** using the new dump flags:
    undeclared variable and a wrong-argument-count call, each pointing at
    its exact `line:col`.
 5. **Stage 4, codegen**: `mycc demos\simple.c` prints the assembly; walk
-   the frame setup, the `push/pop` expression engine, and `call`.
+   the frame setup, the expression engine (`%r10` holds the left operand, with a
+   push/pop spill when two are live - or `--no-opt` to see the pure stack
+   version), and `call`.
 6. End to end: `example.c` → 197, plus the full test suite, then a
-   by-file line count of the ~8,000-line hand-written compiler (9 files).
+   by-file line count of the ~8,800-line hand-written compiler (10 files).
 
 Great talking point: the same tree you can print with `--dump-ast` is
 exactly what the code generator walks to emit assembly.
@@ -1293,7 +1300,7 @@ exactly what the code generator walks to emit assembly.
 - **Show real output instead**: `mycc.exe tests\26_hello_world.c -o
   build\hello.s`, link it, and it prints `Hello, world!` — the same program,
   now talking to the CRT through the platform ABI.
-- **Read the whole compiler**: `src/` is ~8,100 lines across 9 files.
+- **Read the whole compiler**: `src/` is ~8,800 lines across 10 files.
   `src/codegen.c` is the shortest path to "aha" — it is just a walk over
   the syntax tree emitting instructions.
 - **Catch a mistake live**: feed mycc a broken program and show the

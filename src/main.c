@@ -6,6 +6,7 @@
 #include "dump.h"
 #include "lexer.h"
 #include "myc.h"
+#include "opt.h"
 #include "parser.h"
 #include "semantic.h"
 #include "util.h"
@@ -32,9 +33,11 @@ static void usage(void)
     fprintf(stderr,
             "  --dump-ast     print the syntax tree (after checks), then stop\n");
     fprintf(stderr,
-            "  --no-opt       disable constant folding and constant-condition\n");
+            "  --no-opt       disable all four optimizations: constant\n");
     fprintf(stderr,
-            "                 elimination (the pre-optimizer code generator)\n");
+            "                 folding, constant-condition elimination, dead\n");
+    fprintf(stderr,
+            "                 local stores, and temporaries in registers\n");
     fprintf(stderr,
             "  --sign         embed a provenance string in the program's data\n");
     fprintf(stderr,
@@ -163,13 +166,13 @@ int main(int argc, char **argv)
     if (version_flag) {
         /* Phase 7: one line that answers "what am I, and what can I target?"
          * without compiling anything. Kept deliberately grep-able. */
-        printf("mycc 0.6 - C-subset compiler for AMD64 AT&T assembly\n");
+        printf("mycc 0.7 - C-subset compiler for AMD64 AT&T assembly\n");
         printf("targets: linux, windows, darwin (default: %s)\n",
                target_kind == TARGET_WINDOWS ? "windows"
                : target_kind == TARGET_DARWIN ? "darwin"
                                               : "linux");
         printf("optimizer: %s (--no-opt to disable); --sign stamps programs\n",
-               g_optimize ? "on" : "off");
+               g_optimize ? "on: folding, dead stores, registers" : "off");
         return 0;
     }
 
@@ -209,6 +212,14 @@ int main(int argc, char **argv)
                 source_path);
         free(source);
         return 1;
+    }
+
+    /* Phase 5: the AST optimizer, after typing and before anything looks at the
+     * tree. `--dump-ast` therefore shows the code that actually runs, which is
+     * the property every other optimization in this compiler already keeps.
+     * --no-opt skips it so the two paths can be compared. */
+    if (g_optimize) {
+        opt_run(ast);
     }
 
     if (dump_ast_flag) {

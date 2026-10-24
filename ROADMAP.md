@@ -6,16 +6,20 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 - **[ ]** not started · **[~]** in progress · **[x]** done
 
 > **Status:** Phases 0, 1 (except the `int` width decision and multi-error
-> recovery), 2, 3 and 4 are complete. Phase 5 is in progress (folding,
-> dead-branch elimination and constant operands have landed; dataflow copy
-> propagation and the register allocator have not). Phase 6 is partly done
+> recovery), 2, 3, 4 and 5 are complete. Phase 5 (optimization) landed in four
+> pieces - constant folding, dead-branch elimination, dead local stores and
+> expression temporaries in a register - with copy propagation measured and
+> deliberately rejected and the liveness allocator staged behind the Phase 7 IR.
+> Phase 6 is partly done
 > (caret diagnostics, the warning channel, the differential harness and the
 > opt/no-opt equivalence check are in; `--interpret` and the random program
 > generator are not). Phase 7 has `--version`, `--sign` and three-target output;
-> floating point and an SSA IR are open. The suite now has 33 positive tests, 41
-> error/diagnostic tests and 3 contract checks (77 checks), and every job also
+> floating point and an SSA IR are open. The suite now has 35 positive tests, 41
+> error/diagnostic tests and 4 contract checks (80 checks), and every job also
 > runs a differential test that requires mycc and gcc to return the same exit
-> code (`make difftest` / `difftest.bat`).
+> code (`make difftest` / `difftest.bat`). Every positive test is additionally
+> built with `--no-opt` and required to exit the same way and print the same
+> bytes, so the optimizer is checked against behaviour on every program.
 >
 > **Correctness sweep (2026-10-23):** a full source review plus ~30 adversarial
 > probes against gcc turned up 21 defects, all of which are now fixed or (one)
@@ -199,42 +203,84 @@ Linux; `tests/diff/02_stack_args.c` cross-checks stack arguments against gcc.
 
 ## Phase 5 — Optimization (beyond the "no optimizer" claim)
 
-- [x] Constant folding (`2 + 3` → `5`, comparisons of constants, folding into
-      `movq $k`) — **folds in semantic analysis**, after the node's type is
+**Complete.** Four optimizations, one switch (`--no-opt`) that turns all of them
+off, and a test suite that builds every program both ways and requires the same
+behaviour.
+
+- [x] Constant folding (`2 + 3` -> `5`, comparisons of constants, folding into
+      `movq $k`) - **folds in semantic analysis**, after the node's type is
       known, rewriting the node *in place* so parents see the folded form
       without re-parenting. `--dump-ast` shows `14`, not `(2 + 3 * 4)`.
       Conservative by design: only integer results, never unsigned operands,
       never a division by zero, never the comma operator
-- [x] Dead code / constant-condition elimination (`if (0) ...`) — **in
+- [x] Dead code / constant-condition elimination (`if (0) ...`) - **in
       codegen**, not semantic: only the live arm of `if`/`? :` is emitted,
       `while (0)` emits nothing, `for (init; 0; step)` emits only the init,
       and `do { } while (0)` emits the body with its labels but no back-jump.
       The dead arm is still parsed and type-checked, so deleting output never
       deletes a diagnostic
-- [ ] Copy propagation + dead variable elimination for the current
-      push/pop stack machine
-- [ ] Replace the expression stack machine with a simple register allocator
-      (a few `%r` temps instead of `push`/`pop` per operation)
+- [x] Dead local stores - **`src/opt.c`**, a new pass between semantic analysis
+      and code generation (so `--dump-ast` still shows the code that runs). It
+      classifies every use of every local as read / written / address-taken and
+      deletes a store when the variable is read nowhere, its address never
+      escapes, it is a scalar, and the stored expression is pure. Locals are
+      keyed by `stack_offset`, not by name, so shadowing cannot let one
+      variable's reads pay for another's stores. The address-taken rule is the
+      load-bearing one: `&b` is *not* a write, and treating it as one made
+      `int *p = &b; ... *p` read a deleted store (caught by `tests/12`, and
+      `tests/35` exists to keep it caught)
+- [x] Expression temporaries in a register - **in `codegen.c`**, the "register
+      allocator" item. The stack machine used to park the left operand with
+      `pushq %rax` and pick it back up with `popq %rcx`; it now parks it in
+      `%r10` and combines straight out of it (`addq %r10, %rax`), spilling to
+      the machine stack only when an expression needs a second temporary. That
+      is one instruction per binary operation, and it lands on the common case
+      (`a + b`; `a + 1` already used the immediate path)
+- [x] ~~Copy propagation~~ - **measured, then deliberately not implemented.**
+      `t = x; ... use t ...` and `... use x ...` compile to the same frame load
+      on this back end, so the rewrite buys zero instructions; it pays only when
+      a value can stay in a register *across statements*, which is the liveness
+      allocator below. Implementing it would have been motion without a
+      measurement
+- [ ] Liveness-based global allocator (values living in registers across
+      statements) - **staged with the Phase 7 IR**, see below
 
-**Acceptance:** identical exit codes across all tests (differential check), and
-the tour's step-5 contrast can now show *some* of mycc's own folding as a
-learning example. *Partly met:* `--no-opt` exists so the two back ends can be
-compared directly (across the current suite that is 10,285 lines of assembly
-unoptimized vs 6,852 optimized — 33.4% removed), every program in `tests/` was
-run through both paths with identical exit codes, and `tests/diff/03_folding.c`
-cross-checks the folded semantics against gcc. Still open in this phase: copy
-propagation / dead variables, and the register allocator.
+**Acceptance - met.** `--no-opt` produces byte-identical assembly to the
+pre-Phase-5 compiler (checked with SHA-256 over all 35 test programs), and
+`test.bat` / `make test` now compile *every* test a second time with `--no-opt`
+and require the same exit status and the same bytes on stdout, so the optimizer
+is verified not to change behaviour on every program, not just on the ones with
+a dedicated test. `tests/diff/03_folding.c` still cross-checks the folded
+semantics against gcc.
 
-**Order matters for the two open items.** Copy propagation and dead-variable
-elimination are dataflow questions ("what value can reach this use?"), and the
-register allocator is a *liveness* question over the same data. Both want a
-representation with basic blocks and explicit definitions and uses — which is
-the `SSA-lite` item currently sitting in Phase 7. Doing them on the AST means
-re-deriving that information from a tree that cannot express "is this variable
-live across the call?", and a register allocator that is subtly wrong emits
-*silent wrong code* rather than a bad diagnostic. So the intended order is:
-dead-local elimination → copy propagation → IR → register allocator, and the
-allocator lands behind `--no-opt` parity plus its own staging.
+**The measurements that shaped it** (assembly line counts, Windows target):
+
+| build | lines | `pushq`/`popq` |
+|---|---|---|
+| the 33 programs before this phase, optimized | 6,852 | 793 |
+| ... with the dead-store pass only | 6,848 | 793 |
+| ... with two *callee-saved* temp registers (rejected) | 7,497 | 236 |
+| ... shipped: one *caller-saved* temp register (`%r10`) | 6,734 | 338 |
+| whole suite (35 programs), `--no-opt` | 11,055 | 2,378 |
+| whole suite (35 programs), optimized | 7,315 | 433 |
+
+The two-register row is the interesting one: it removed 70% of the push/pops and
+still *added 9.4% to the output*, because two callee-saved registers cost a
+save/restore pair in every function and at every return, and this suite is full
+of small functions. One caller-saved register costs nothing to use, so it keeps
+the per-operation win and drops the fixed cost. That reversal is why the pool is
+one register and not five: the expensive part of a register on this back end is
+not using it, it is *owning* it.
+
+**Order matters for what is left.** The remaining item - values living in
+registers across statements - is a *liveness* question, and it needs a
+representation with basic blocks and explicit definitions and uses, which is the
+`SSA-lite` item in Phase 7. Doing it on the AST means re-deriving liveness from
+a tree that cannot express "is this variable live across the call?", and an
+allocator that is subtly wrong emits *silent wrong code* rather than a bad
+diagnostic. So it stays behind the IR, behind `--no-opt` parity, and behind its
+own staging - which is the order this phase ended up following for the parts
+that could be done safely.
 
 ---
 

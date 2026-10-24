@@ -142,7 +142,7 @@ if errorlevel 1 (
 echo.
 echo   That string is inside the executable. gcc assembled it,
 echo   but mycc wrote it. My compiler is a few hundred kilobytes
-echo   and six and a half thousand lines; gcc is millions. It
+echo   and nearly nine thousand lines; gcc is millions. It
 echo   cannot secretly be gcc.
 echo.
 pause

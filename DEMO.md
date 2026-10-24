@@ -17,8 +17,8 @@ Say this once, then run scene 2 and stop:
 
 > "A compiler translates things people can read into things machines can read.
 > Almost all of them are millions of lines and nobody can look inside. Mine is
-> six and a half thousand lines and every part of it is yours to inspect. It
-> compiles C — a small but real subset — to actual assembly. Ask it something."
+> under nine thousand lines and every part of it is yours to inspect. It
+> compiles C - a small but real subset - to actual assembly. Ask it something."
 
 Then let them type their name. When it prints back, that's the demo. Nothing
 that follows beats it for a non-technical audience.
@@ -89,7 +89,7 @@ toy. `instructions.md` has the full grammar.
 | Question | Answer |
 |---|---|
 | "Is this just gcc with extra steps?" | gcc is the *assembler* here — the copy-paster of instructions into a binary. mycc writes those instructions. Scene 4 proves the binary carries mycc's stamp. |
-| "Is it as good as a real compiler?" | No, and it says so. No optimizer beyond folding and dead branches; no floats; no preprocessor; structs are never passed by value. `ROADMAP.md` lists exactly where it stops. |
+| "Is it as good as a real compiler?" | No, and it says so. Four optimizations only - folding, dead branches, dead stores, one temp register - and no global register allocator; no floats; no preprocessor; structs are never passed by value. `ROADMAP.md` lists exactly where it stops. |
 | "How long did it take?" | *(answer honestly — the commit history is public and matches)* |
 | "Who uses it?" | Nobody. It's a teaching artefact — a glass box, not a product. That's the point. |
 | "Could it compile a real program?" | It compiles programs of a few hundred lines that use pointers, arrays, structs, loops and `printf`. It cannot compile `#include <stdio.h>` - mycc has no preprocessor; the built-ins replace it. |

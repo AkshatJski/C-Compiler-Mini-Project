@@ -13,7 +13,7 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 ## What's inside
 
 - Hand-written lexer, recursive-descent parser, scoped symbol table,
-  semantic analysis, and code generator (~7,000 lines of C99 across `src/`
+  semantic analysis, an AST optimizer, and a code generator (~8,800 lines of C99 across `src/`
   and `include/`).
 - **Types:** `int` (64-bit), `char` (signed, one byte), their `unsigned`
   counterparts (`unsigned int`, `unsigned char`, and bare `unsigned`), plus
@@ -95,11 +95,14 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 - `--dump-tokens` / `--dump-ast` reveal the compiler's internals;
   `--target=linux|windows|darwin` picks the assembler flavour (defaulting to
   the host mycc was built for).
-- **One optimizer switch:** `--no-opt` disables Phase 5's constant folding and
-  constant-condition elimination, emitting exactly what the pre-optimizer code
-  generator emitted. It exists so the two back ends can be compared line for
-  line (`mycc hello.c -o a.s` vs `mycc --no-opt hello.c -o b.s`) and so that an
-  optimizer bug is always bisectable against a known-good path.
+- **One optimizer switch:** `--no-opt` disables all of Phase 5 - constant
+  folding, constant-condition elimination, dead local stores and expression
+  temporaries in registers - emitting exactly what the pre-optimizer code
+  generator emitted (that claim is checked: every test is built both ways and
+  must agree on exit status and complete output). It exists so the two paths can
+  be compared line for line (`mycc hello.c -o a.s` vs `mycc --no-opt hello.c -o
+  b.s`) and so that an optimizer bug is always bisectable against a known-good
+  path.
 - **Carets, not line numbers.** Every error and warning quotes the offending
   line and points at the column:
 
@@ -114,8 +117,8 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   which compiler built it (off by default).
 - A failed compilation leaves **no** output file behind (the assembly is
   written to a temporary file and renamed on success).
-- **Tests:** 33 positive programs (`tests/01…33`) and 41 rejection tests
-  (`tests/errors/`), 78 checks in total — covering pointers (`12`), arrays
+- **Tests:** 35 positive programs (`tests/01-36`) and 41 rejection tests
+  (`tests/errors/`), 80 checks in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
@@ -123,9 +126,12 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   fall-off-the-end warning (`25`), hello world (`26`), the print built-ins
   (`27`), `extern printf` (`28`), string escapes (`29`), NUL bytes inside
   a literal (`30`), constant folding (`31`), constant-condition
-  elimination (`32`), and constant operands (`33`). Positive tests
-  assert the program's real **output** (`// EXPECT-OUT:`), not just its exit
-  code. `tests/diff/` additionally holds programs that are compiled by **both**
+  elimination (`32`), constant operands (`33`), dead local stores (`35`) and
+  temporaries in registers (`36`). Positive tests assert the program's real
+  **output** (`// EXPECT-OUT:`), not just its exit code, and each of them is
+  also built with `--no-opt` and required to print the same bytes, so the
+  optimizer is checked for changing behaviour on every test.
+  `tests/diff/` additionally holds programs that are compiled by **both**
   mycc and gcc and required to return the same exit code (`difftest.bat` /
   `make difftest`).
 
@@ -136,10 +142,13 @@ pointer (`struct P *p`) instead, and the compiler says so. `int` remains
 64-bit (see the open Phase 1 decision in
 [ROADMAP.md](ROADMAP.md)), so `unsigned int` is 64-bit too. `main` must still
 be `int main(void)`; `argv` is not available to mycc programs yet.
-The optimizer is deliberately shallow so far - constant folding,
-constant-condition elimination and constant operands only. There is no register
-allocator: every expression still goes through the stack machine, and that is a
-documented tradeoff rather than an oversight (see `ROADMAP.md` Phase 5).
+The optimizer has four pieces, and they are deliberately the ones that can be
+argued for in a paragraph: constant folding, constant-condition elimination,
+dead local stores, and expression temporaries kept in a register. There is still
+no *global* register allocator - a value only lives in a register inside the
+expression that computes it - and that is a documented tradeoff rather than an
+oversight (see `ROADMAP.md` Phase 5 for the measurements and for what a
+liveness-based allocator would need first).
 
 ## A second language (`--lang=myc`)
 
@@ -303,12 +312,14 @@ exit-code suite and the differential test.
 - [DEMO.md](DEMO.md) — presenter script for a non-technical audience (60s / 3min /
   5min cuts, the questions you will actually be asked, and what to do when
   something breaks live).
-- [ROADMAP.md](ROADMAP.md) — planned phases: C-fidelity fixes, more language,
-  I/O and the ABI, optimization, diagnostics and tooling. Phases 1–4 are
-  complete. Phase 5 (optimization) is in progress — constant folding,
-  constant-condition elimination and constant operands have landed; dataflow
-  copy propagation and the register allocator are the remainder, and the roadmap
-  says why they are staged last. Phase 6 (diagnostics and tooling) is partly
+- [ROADMAP.md](ROADMAP.md) - planned phases: C-fidelity fixes, more language,
+  I/O and the ABI, optimization, diagnostics and tooling. Phases 1-4 are
+  complete. Phase 5 (optimization) is complete: constant folding,
+  constant-condition elimination, dead local stores and expression temporaries
+  in a register. Copy propagation was measured and rejected (it saves nothing on
+  a stack back end) and the liveness-based global allocator is staged with
+  Phase 7, because it needs an IR first - the roadmap records both decisions
+  with numbers. Phase 6 (diagnostics and tooling) is partly
   done: caret snippets, the warning channel, the differential harness and the
   opt/no-opt equivalence check are in; `--interpret` and the random program
   generator are not. Phase 7 has `--version`, `--sign` and three-target output;

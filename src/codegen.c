@@ -199,7 +199,7 @@ static void gen_expr(ASTNode *node);
 static void gen_addr(ASTNode *node);
 static int gen_stmt(ASTNode *node);
 static int gen_stmt_one(ASTNode *node);
-static void emit_binop(BinaryOp op, int uns);
+static void emit_binop_reg(BinaryOp op, int uns, const char *left_reg);
 static int gen_binary_imm(ASTNode *node);
 
 static void emit_line(const char *fmt, ...)
@@ -210,6 +210,272 @@ static void emit_line(const char *fmt, ...)
     va_end(ap);
     fputc('\n', out);
 }
+
+/* ------------------------------------------------------------------ */
+/* Expression temporaries: registers first, stack only as a spill      */
+/* ------------------------------------------------------------------ */
+
+/* Phase 5's register allocator, and it is deliberately a small one.
+ *
+ * The back end is a stack machine: a binary operation evaluates the left
+ * operand, parks it, evaluates the right, and combines. The parking was always
+ * `pushq %rax` / `popq %rcx`, so every operation cost two memory instructions
+ * even when a register was free. So `a + b` used to compile to
+ *
+ *     <a>  pushq %rax    <b>  popq %rcx    addq %rcx, %rax     (3 + two loads)
+ *
+ * and now compiles to
+ *
+ *     <a>  movq %rax, %r10    <b>  addq %r10, %rax             (2 + two loads)
+ *
+ * because the combine reads the left operand straight out of the register it was
+ * parked in. That is one instruction per operation, and no stack traffic at all.
+ *
+ * Why exactly one register, and why a caller-saved one
+ * ----------------------------------------------------
+ * The first version of this used two *callee-saved* registers, %rbx and %r12,
+ * which needed two 8-byte slots below the locals and a save/restore pair in
+ * every function and at every return. Measured on the suite it removed 70% of
+ * the push/pops but *added 9.4% to total output*: the fixed per-function cost
+ * beat the per-operation saving, because this suite is full of small functions.
+ * A register that costs nothing to use is worth more than a second one that
+ * costs four instructions per function.
+ *
+ * %r10 is that register: it is caller-saved, so a function may clobber it
+ * without telling anyone, and it needs no prologue or epilogue. Every other
+ * register is spoken for -- %rax is the value, %rcx the combine register, %rdx
+ * the division pair, %rsi/%rdi the struct copy and the SysV argument registers,
+ * %r8/%r9 arguments, %r11 scratch for shifts and for `switch` comparisons.
+ *
+ * %r10 is also division's scratch register, which is the one place the pool and
+ * the instruction set collide. temp_combine() handles it in two steps: the
+ * operand being consumed leaves the register first (%rcx), and a value parked by
+ * an *enclosing* expression is spilled across the instruction and restored after
+ * it. Without that second step `(a / b) + (d % c)` lost `a / b` -- the outer left
+ * operand sat in %r10 and the inner `%` reused it (BUG-026). Shifts use %r11,
+ * which is never a pool register, so they need no spill.
+ *
+ * A second register would widen that collision to every nested shape, which is
+ * the other reason there is only one.
+ *
+ * Calls are the other place a parked value is at risk, and the fix is one
+ * sentence: before the call sequence, push the live pool register; after it, pop
+ * it back. Those pushes go through pushed_count like any other, so the 16-byte
+ * call alignment computation stays exact.
+ *
+ * Entries above the pool are ordinary stack slots, so the structure is a stack
+ * whose bottom entries happen to live in registers. `spill_at_push` records how
+ * many call-spill slots existed when an entry was pushed, which is what makes
+ * the offset of a stack entry correct even while spills sit underneath it.
+ *
+ * With --no-opt the pool is disabled entirely (temp_push goes straight to the
+ * stack), so the unoptimized output is byte-for-byte the pre-Phase-5 compiler.
+ */
+
+#define TEMP_POOL_SIZE 1
+#define TEMP_MAX 512
+
+static const char *const temp_regs[TEMP_POOL_SIZE] = {"%r10"};
+
+typedef struct
+{
+    int is_reg;         /* 1: value lives in this register, 0: on the stack */
+    const char *reg;
+    int spill_at_push;  /* temp_spill_pending when this entry was pushed */
+} TempEntry;
+
+static TempEntry temp_stack[TEMP_MAX];
+static int temp_depth;
+static int temp_pool_used;     /* registers currently allocated */
+static int temp_spill_pending; /* call-spill slots currently on the stack */
+
+/* Parks %rax as an expression temporary. */
+static void temp_push(void)
+{
+    if (temp_depth >= TEMP_MAX)
+    {
+        /* Unreachable: the parser caps nesting at MYCC_MAX_NEST (256), and
+         * each level pushes at most two entries. Report rather than corrupt. */
+        report_error(0, 0, "internal error: expression temporaries exhausted");
+        return;
+    }
+    TempEntry *e = &temp_stack[temp_depth];
+    e->spill_at_push = temp_spill_pending;
+    if (g_optimize && temp_pool_used < TEMP_POOL_SIZE)
+    {
+        e->is_reg = 1;
+        e->reg = temp_regs[temp_pool_used++];
+        emit_line("\tmovq %%rax, %s", e->reg);
+    }
+    else
+    {
+        e->is_reg = 0;
+        e->reg = NULL;
+        emit_line("\tpushq %%rax");
+        pushed_count++;
+    }
+    temp_depth++;
+}
+
+/* Discards the top temporary without loading it anywhere. */
+static void temp_drop(void)
+{
+    if (temp_depth <= 0)
+    {
+        return;
+    }
+    temp_depth--;
+    TempEntry *e = &temp_stack[temp_depth];
+    if (e->is_reg)
+    {
+        temp_pool_used--;
+    }
+    else
+    {
+        emit_line("\taddq $8, %%rsp");
+        pushed_count--;
+    }
+}
+
+/* Loads the top temporary into `dst` and discards it. */
+static void temp_pop_into(const char *dst)
+{
+    if (temp_depth <= 0)
+    {
+        return;
+    }
+    temp_depth--;
+    TempEntry *e = &temp_stack[temp_depth];
+    if (e->is_reg)
+    {
+        if (strcmp(dst, e->reg) != 0)
+        {
+            emit_line("\tmovq %s, %s", e->reg, dst);
+        }
+        temp_pool_used--;
+    }
+    else
+    {
+        emit_line("\tpopq %s", dst);
+        pushed_count--;
+    }
+}
+
+/* Loads the temporary `depth` levels below the top into `dst`, keeping it. */
+static void temp_peek_into(const char *dst, int depth)
+{
+    int idx = temp_depth - 1 - depth;
+    if (idx < 0)
+    {
+        return;
+    }
+    const TempEntry *e = &temp_stack[idx];
+    if (e->is_reg)
+    {
+        emit_line("\tmovq %s, %s", e->reg, dst);
+        return;
+    }
+    /* A stack entry sits below every stack entry above it, and below every
+     * call-spill slot pushed since it was created. */
+    int slots_above = 0;
+    for (int i = idx + 1; i < temp_depth; i++)
+    {
+        if (!temp_stack[i].is_reg)
+        {
+            slots_above++;
+        }
+    }
+    int bytes = 8 * (slots_above + (temp_spill_pending - e->spill_at_push));
+    if (bytes == 0)
+    {
+        emit_line("\tmovq (%%rsp), %s", dst);
+    }
+    else
+    {
+        emit_line("\tmovq %d(%%rsp), %s", bytes, dst);
+    }
+}
+
+static int temp_top_is_reg(void)
+{
+    return temp_depth > 0 && temp_stack[temp_depth - 1].is_reg;
+}
+
+/* Parks every live pool register on the machine stack. Returns the number
+ * parked, which temp_unspill() needs. Used across calls and across instructions
+ * that use the pool register as scratch. */
+static int temp_spill(void)
+{
+    int n = temp_pool_used;
+    for (int i = 0; i < n; i++)
+    {
+        emit_line("\tpushq %s", temp_regs[i]);
+        pushed_count++;
+    }
+    temp_spill_pending += n;
+    return n;
+}
+
+static void temp_unspill(int n)
+{
+    for (int i = n - 1; i >= 0; i--)
+    {
+        emit_line("\tpopq %s", temp_regs[i]);
+        pushed_count--;
+    }
+    temp_spill_pending -= n;
+}
+
+/* True for the operators whose instruction sequence inside emit_binop_reg() uses
+ * %r10 or %r11 as scratch. A value parked in a pool register cannot survive one
+ * of these, so temp_combine() materialises it into %rcx instead. */
+static int binop_clobbers_scratch(BinaryOp op)
+{
+    return op == OP_DIV || op == OP_MOD || op == OP_SHL || op == OP_SHR;
+}
+
+/* Division and modulo are the operators that *write* %r10, the pool register.
+ * (Shifts use %r11, which is never a pool register.) A value parked by an
+ * enclosing expression has to be saved across them. */
+static int binop_clobbers_pool(BinaryOp op)
+{
+    return op == OP_DIV || op == OP_MOD;
+}
+
+/* Consumes the top temporary as the LEFT operand of `op`, combining straight
+ * out of its register when it has one. This is where the instruction is saved:
+ * no `movq` back into %rcx at all. */
+static void temp_combine(BinaryOp op, int uns)
+{
+    if (temp_top_is_reg() && !binop_clobbers_scratch(op))
+    {
+        const char *reg = temp_stack[temp_depth - 1].reg;
+        temp_depth--;
+        temp_pool_used--;
+        emit_binop_reg(op, uns, reg);
+        return;
+    }
+    /* Either the operand was spilled to the stack, or the operator is about to
+     * scribble on its own scratch register: move the value to %rcx, which also
+     * frees the pool register before the clobbering instruction runs. */
+    temp_pop_into("%rcx");
+
+    /* What is left in the pool belongs to an enclosing expression. It cannot
+     * stay there across an instruction that writes the pool register, so park it
+     * and bring it back afterwards -- the same discipline as a call. Without
+     * this, `(a / b) + (d % c)` lost `a / b`: the outer left operand sat in %r10
+     * and the inner `%` reused it as scratch (caught by tests/36_registers.c). */
+    if (binop_clobbers_pool(op) && temp_pool_used > 0)
+    {
+        int spilled = temp_spill();
+        emit_binop_reg(op, uns, "%rcx");
+        temp_unspill(spilled);
+        return;
+    }
+    emit_binop_reg(op, uns, "%rcx");
+}
+
+
 
 /* ------------------------------------------------------------------ */
 /* String pool (ROADMAP Phase 4)                                       */
@@ -458,35 +724,39 @@ static void gen_binary(ASTNode *node)
     }
 
     gen_expr(node->left);
-    emit_line("\tpushq %%rax");
-    pushed_count++;
+    temp_push();
     gen_expr(node->right);
-    emit_line("\tpopq %%rcx"); /* %rcx = left operand, %rax = right */
-    pushed_count--;
-
     /* Decided from the *operand* types (not the result type) so that div,
      * mod, >> and the ordered comparisons pick the right flavour of x86
      * instruction. Must agree exactly with the folding done in semantic.c. */
-    emit_binop(node->op,
-               binary_is_unsigned(node->left->val_type, node->right->val_type));
+    temp_combine(node->op, binary_is_unsigned(node->left->val_type,
+                                              node->right->val_type));
 }
 
 /* Applies one binary operator to %rcx (left) and %rax (right) and leaves the
  * result in %rax. Split out of gen_binary() so that compound assignment can
  * reuse it after evaluating its lvalue exactly once (BUG-001). */
-static void emit_binop(BinaryOp op, int uns)
+/* Applies one binary operator to `left_reg` (left) and %rax (right) and leaves
+ * the result in %rax.
+ *
+ * It used to hard-code %rcx, which forced every caller to move the left operand
+ * there. Taking the register as a parameter is what lets the temporary pool hand
+ * over a register directly, and it costs nothing when that register is %rcx.
+ * Split out of gen_binary() so compound assignment can reuse it after
+ * evaluating its lvalue exactly once (BUG-001). */
+static void emit_binop_reg(BinaryOp op, int uns, const char *left_reg)
 {
     switch (op)
     {
     case OP_ADD:
-        emit_line("\taddq %%rcx, %%rax");
+        emit_line("\taddq %s, %%rax", left_reg);
         break;
     case OP_SUB:
-        emit_line("\tsubq %%rax, %%rcx");
-        emit_line("\tmovq %%rcx, %%rax");
+        emit_line("\tsubq %%rax, %s", left_reg);
+        emit_line("\tmovq %s, %%rax", left_reg);
         break;
     case OP_MUL:
-        emit_line("\timulq %%rcx, %%rax");
+        emit_line("\timulq %s, %%rax", left_reg);
         break;
     case OP_DIV:
     case OP_MOD:
@@ -495,8 +765,8 @@ static void emit_binop(BinaryOp op, int uns)
          * function to preserve). Signed division sign-extends the dividend
          * into %rdx:%rax with cqto; unsigned division requires %rdx to be
          * *cleared* instead, and uses divq. */
-        emit_line("\tmovq %%rax, %%r10"); /* %r10 = divisor */
-        emit_line("\tmovq %%rcx, %%rax"); /* %rax = dividend */
+        emit_line("\tmovq %%rax, %%r10");    /* %r10 = divisor */
+        emit_line("\tmovq %s, %%rax", left_reg); /* %rax = dividend */
         if (uns)
         {
             emit_line("\txorq %%rdx, %%rdx");
@@ -513,28 +783,36 @@ static void emit_binop(BinaryOp op, int uns)
         }
         break;
     case OP_BIT_AND:
-        emit_line("\tandq %%rcx, %%rax");
+        emit_line("\tandq %s, %%rax", left_reg);
         break;
     case OP_BIT_OR:
-        emit_line("\torq %%rcx, %%rax");
+        emit_line("\torq %s, %%rax", left_reg);
         break;
     case OP_BIT_XOR:
-        emit_line("\txorq %%rcx, %%rax");
+        emit_line("\txorq %s, %%rax", left_reg);
         break;
     case OP_SHL:
-        /* %rcx = value (left), %rax = shift count (right). */
-        emit_line("\tmovq %%rcx, %%r11");
-        emit_line("\tmovq %%rax, %%rcx");
-        emit_line("\tmovq %%r11, %%rax");
-        emit_line("\tshlq %%cl, %%rax");
-        break;
     case OP_SHR:
+        /* The shift count must be in %cl, so the left operand is moved there
+         * when it did not arrive in %rcx. %rcx = value (left), %rax = count. */
+        if (strcmp(left_reg, "%rcx") != 0)
+        {
+            emit_line("\tmovq %s, %%rcx", left_reg);
+        }
         emit_line("\tmovq %%rcx, %%r11");
         emit_line("\tmovq %%rax, %%rcx");
         emit_line("\tmovq %%r11, %%rax");
-        /* sarq fills with the sign bit, shrq with zeros: `>>` is an
-         * arithmetic shift on signed values and a logical one on unsigned. */
-        emit_line(uns ? "\tshrq %%cl, %%rax" : "\tsarq %%cl, %%rax");
+        if (op == OP_SHL)
+        {
+            emit_line("\tshlq %%cl, %%rax");
+        }
+        else
+        {
+            /* sarq fills with the sign bit, shrq with zeros: `>>` is an
+             * arithmetic shift on signed values and a logical one on
+             * unsigned. */
+            emit_line(uns ? "\tshrq %%cl, %%rax" : "\tsarq %%cl, %%rax");
+        }
         break;
     case OP_AND:
     case OP_OR:
@@ -542,34 +820,34 @@ static void emit_binop(BinaryOp op, int uns)
     case OP_COMMA:
         break; /* handled by the callers before operands are pushed */
     case OP_EQ:
-        emit_line("\tcmpq %%rax, %%rcx");
+        emit_line("\tcmpq %%rax, %s", left_reg);
         emit_line("\tsete %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_NE:
-        emit_line("\tcmpq %%rax, %%rcx");
+        emit_line("\tcmpq %%rax, %s", left_reg);
         emit_line("\tsetne %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_LT:
-        emit_line("\tcmpq %%rax, %%rcx");
+        emit_line("\tcmpq %%rax, %s", left_reg);
         /* setb/setbe/seta/setae are the unsigned counterparts of
          * setl/setle/setg/setge; pointers and `unsigned int` need them. */
         emit_line(uns ? "\tsetb %%al" : "\tsetl %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_LE:
-        emit_line("\tcmpq %%rax, %%rcx");
+        emit_line("\tcmpq %%rax, %s", left_reg);
         emit_line(uns ? "\tsetbe %%al" : "\tsetle %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_GT:
-        emit_line("\tcmpq %%rax, %%rcx");
+        emit_line("\tcmpq %%rax, %s", left_reg);
         emit_line(uns ? "\tseta %%al" : "\tsetg %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
     case OP_GE:
-        emit_line("\tcmpq %%rax, %%rcx");
+        emit_line("\tcmpq %%rax, %s", left_reg);
         emit_line(uns ? "\tsetae %%al" : "\tsetge %%al");
         emit_line("\tmovzbq %%al, %%rax");
         break;
@@ -725,23 +1003,20 @@ static void gen_compound_assign(ASTNode *node)
                   target->vtype == TYPE_CHAR;
 
     gen_addr(target); /* %rax = address of the lvalue */
-    emit_line("\tpushq %%rax");
-    pushed_count++;
+    temp_push();
 
-    emit_line("\tmovq (%%rsp), %%rcx");
+    temp_peek_into("%rcx", 0); /* %rcx = address */
     emit_line("\t%s (%%rcx), %%rax", load_op_for(target->val_type, is_char));
-    emit_line("\tpushq %%rax"); /* keep the old value as the left operand */
-    pushed_count++;
+    temp_push(); /* keep the old value as the left operand */
 
     gen_expr(binop->right); /* %rax = right operand (already scaled if needed) */
 
-    emit_line("\tpopq %%rcx"); /* %rcx = old value */
-    pushed_count--;
-    emit_binop(binop->op, binary_is_unsigned(target->val_type,
-                                             binop->right->val_type));
+    /* The old value is consumed as the left operand; the address is still one
+     * level down, in its register or in its stack slot. */
+    temp_combine(binop->op, binary_is_unsigned(target->val_type,
+                                               binop->right->val_type));
 
-    emit_line("\tpopq %%rcx"); /* %rcx = address */
-    pushed_count--;
+    temp_pop_into("%rcx"); /* %rcx = address */
     emit_store_indirect("%rcx", target->val_type, target->vtype);
     /* %rax already holds the new value, which is the value of the assignment. */
 }
@@ -772,8 +1047,7 @@ static void gen_assign(ASTNode *node)
         }
 
         gen_addr(node->left);
-        emit_line("\tpushq %%rax"); /* destination; also the result value */
-        pushed_count++;
+        temp_push(); /* destination; also the result value */
 
         if (node->right->type == AST_ASSIGN)
         {
@@ -788,11 +1062,10 @@ static void gen_assign(ASTNode *node)
             emit_line("\tmovq %%rax, %%rsi");
         }
 
-        emit_line("\tmovq (%%rsp), %%rdi");
+        temp_peek_into("%rdi", 0);
         emit_line("\tmovq $%d, %%rcx", size);
         emit_line("\trep movsb");
-        emit_line("\tpopq %%rax");
-        pushed_count--;
+        temp_pop_into("%rax");
         if (saved)
         {
             emit_line("\tpopq %%rsi");
@@ -827,16 +1100,14 @@ static void gen_assign(ASTNode *node)
     {
         /* Evaluate value and save it */
         gen_expr(node->right);
-        emit_line("\tpushq %%rax");
-        pushed_count++;
+        temp_push();
 
         /* Compute destination pointer address into %rax */
         gen_addr(node->left);
         emit_line("\tmovq %%rax, %%rcx"); /* %rcx = destination address */
 
         /* Restore value to store */
-        emit_line("\tpopq %%rax");
-        pushed_count--;
+        temp_pop_into("%rax");
 
         emit_store_indirect("%rcx", node->left->val_type, node->left->vtype);
     }
@@ -855,9 +1126,8 @@ static void gen_postfix(ASTNode *node)
 
     if (node->left->type == AST_VAR_REF)
     {
-        gen_expr(node->left);       /* %rax = old value */
-        emit_line("\tpushq %%rax"); /* keep old value */
-        pushed_count++;
+        gen_expr(node->left); /* %rax = old value */
+        temp_push();          /* keep old value */
         if (node->op == OP_ADD)
         {
             emit_line("\taddq $%d, %%rax", step);
@@ -867,8 +1137,7 @@ static void gen_postfix(ASTNode *node)
             emit_line("\tsubq $%d, %%rax", step);
         }
         emit_var_store(node->left); /* variable gets new value */
-        emit_line("\tpopq %%rax");  /* result is the old value */
-        pushed_count--;
+        temp_pop_into("%rax");      /* result is the old value */
         return;
     }
 
@@ -882,13 +1151,11 @@ static void gen_postfix(ASTNode *node)
          node->left->val_type->kind == TYPE_CHAR) ||
         node->left->vtype == TYPE_CHAR;
 
-    gen_addr(node->left);       /* %rax = address of the lvalue */
-    emit_line("\tpushq %%rax"); /* [address] */
-    pushed_count++;
-    emit_line("\tmovq (%%rsp), %%rcx");
+    gen_addr(node->left); /* %rax = address of the lvalue */
+    temp_push();          /* [address] */
+    temp_peek_into("%rcx", 0);
     emit_line("\t%s (%%rcx), %%rax", load_op_for(node->left->val_type, is_char));
-    emit_line("\tpushq %%rax"); /* [old value, address] */
-    pushed_count++;
+    temp_push(); /* [old value, address] */
 
     if (node->op == OP_ADD)
     {
@@ -899,13 +1166,11 @@ static void gen_postfix(ASTNode *node)
         emit_line("\tsubq $%d, %%rax", step);
     }
 
-    emit_line("\tmovq 8(%%rsp), %%rcx"); /* %rcx = address; old value stays on top */
+    temp_peek_into("%rcx", 1); /* %rcx = address; old value stays on top */
     emit_store_indirect("%rcx", node->left->val_type, node->left->vtype);
 
-    emit_line("\tpopq %%rax"); /* result is the old value */
-    pushed_count--;
-    emit_line("\taddq $8, %%rsp"); /* drop the address slot */
-    pushed_count--;
+    temp_pop_into("%rax"); /* result is the old value */
+    temp_drop();           /* drop the address slot */
 }
 
 static void gen_ternary(ASTNode *node)
@@ -943,6 +1208,13 @@ static void gen_call(ASTNode *node)
     lay.stack_args = n > nreg ? n - nreg : 0;
     lay.shadow = (target == TARGET_WINDOWS) ? 4 : 0; /* 32 bytes, in units */
     lay.padded = 0;
+
+    /* Any expression temporary still in a pool register must be parked: the
+     * callee is free to use %rbx and %r12 (it saves and restores them for *its*
+     * caller, not for us). Parking before the layout computation keeps the
+     * 16-byte alignment arithmetic exact, and reloading after the cleanup keeps
+     * the pops matched. */
+    int spilled = temp_spill();
 
     /* %rsp must be 16-byte aligned at the call. Everything that will still
      * be on the stack at that moment counts: the arguments that do not fit in
@@ -998,6 +1270,8 @@ static void gen_call(ASTNode *node)
         emit_line("\taddq $%d, %%rsp", cleanup * 8);
         pushed_count -= cleanup;
     }
+
+    temp_unspill(spilled);
 }
 
 static void gen_addr(ASTNode *node)
@@ -1337,14 +1611,22 @@ static void gen_switch(ASTNode *node)
     free(cases);
 }
 
+/* The function epilogue. Every `return` comes through here rather than emitting
+ * `leave`/`ret` inline, so a future epilogue-level change (a restore, a stack
+ * protector check) has exactly one place to live. */
+static void emit_epilogue(void)
+{
+    emit_line("\tleave");
+    emit_line("\tret");
+}
+
 static void gen_return(ASTNode *node)
 {
     if (node->left != NULL)
     {
         gen_expr(node->left);
     }
-    emit_line("\tleave");
-    emit_line("\tret");
+    emit_epilogue();
 }
 
 static int gen_stmt_one(ASTNode *n)
@@ -1419,6 +1701,10 @@ static void gen_func(ASTNode *fn)
     int frame = fn->frame_size;
     int aligned_frame = (frame + 15) / 16 * 16;
 
+    temp_depth = 0;
+    temp_pool_used = 0;
+    temp_spill_pending = 0;
+
     emit_line(".text");
     emit_line(".globl %s", sym_name(fn->name));
     emit_line("%s:", sym_name(fn->name));
@@ -1455,8 +1741,7 @@ static void gen_func(ASTNode *fn)
          * instead of leaving whatever garbage happened to be in %rax. For
          * main this matches C's implicit "return 0". */
         emit_line("\tmovq $0, %%rax");
-        emit_line("\tleave");
-        emit_line("\tret");
+        emit_epilogue();
     }
 }
 

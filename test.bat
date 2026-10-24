@@ -114,10 +114,45 @@ if defined WANTOUT (
 if not "!ACTUAL!"=="%EXPECTED%" (
     echo FAIL: %T% expected exit %EXPECTED%, got !ACTUAL!
     set FAILED=1
-) else if defined WANTOUT (
-    echo PASS: %T% ^(exit !ACTUAL!, printed "!WANTOUT!"^)
+    goto :eof
+)
+
+rem Optimizer parity (ROADMAP Phase 5). The optimizer -- constant folding,
+rem constant-branch elimination, dead-store removal and the expression temporary
+rem register -- is only allowed to change how a program is computed, never what it
+rem computes. Building every test a second time with --no-opt and comparing both
+rem the exit status and the complete standard output catches a miscompile without
+rem needing a second expected value in the file.
+mycc.exe --target=windows --no-opt "%T%" -o "build\%~n1.noopt.s" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: %T% --no-opt compile failed
+    set FAILED=1
+    goto :eof
+)
+%CC% -o "build\%~n1.noopt.exe" "build\%~n1.noopt.s"
+if errorlevel 1 (
+    echo FAIL: %T% --no-opt assemble failed
+    set FAILED=1
+    goto :eof
+)
+"build\%~n1.noopt.exe" > "build\%~n1.noopt.stdout" 2>&1
+set "ACTUALNOOPT=!errorlevel!"
+if not "!ACTUALNOOPT!"=="!ACTUAL!" (
+    echo FAIL: %T% --no-opt exits !ACTUALNOOPT!, optimized exits !ACTUAL!
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\%~n1.stdout" "build\%~n1.noopt.stdout" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: %T% --no-opt prints something different
+    set FAILED=1
+    goto :eof
+)
+
+if defined WANTOUT (
+    echo PASS: %T% ^(exit !ACTUAL!, printed "!WANTOUT!", opt/no-opt agree^)
 ) else (
-    echo PASS: %T% ^(exit !ACTUAL!^)
+    echo PASS: %T% ^(exit !ACTUAL!, opt/no-opt agree^)
 )
 goto :eof
 
