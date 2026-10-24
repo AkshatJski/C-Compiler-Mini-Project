@@ -3,7 +3,7 @@
 **Working draft for the college submission.** Every number, commit hash and
 quoted output in this file was taken from the repository itself, not estimated.
 Published since 2026-10-24; the engineering notes it draws on (`decision.md`,
-`Flow.md`, `learn.md`, `report.md`) remain local.
+`Flow.md`, `learn.md`) remain local; the bug ledger `report.md` is published
 
 ---
 
@@ -224,7 +224,7 @@ report chapter needs.
 | D5 | **Differential testing against gcc**, not golden files | Compare emitted assembly to expected text | Golden `.s` files break on every refactor and assert *how*, not *what*; gcc asserts *what* and finds bugs nobody predicted (it found BUG-020) | The oracle is only as good as the test programs, so a fuzzer was added (§7.9) |
 | D6 | **`--no-opt` keeps the pre-optimizer path alive** | Delete the old codegen | Makes every optimizer bug bisectable against a known-good path, and turns "the optimizer preserves behaviour" into a check on every test | One flag and one global; the codegen has two modes to maintain |
 | D7 | **No configuration file, no plugin system** | A `mycc.toml`, pass plugins | A 8,800-line compiler does not need configuration; flags are enough, and a config file is surface area that can drift | No per-project settings; accepted |
-| D8 | **Local engineering docs, public README only** | Publish the whole notebook | The README must stand alone for a stranger; the decision log, flow map, learning guide and bug ledger are working material | The public repo shows the code and the README, not the reasoning — the reasoning is summarised in this report instead |
+| D8 | **Publish the evidence, keep the notebook** | Publish everything from day one; publish nothing but the README | A stranger needs the README to stand alone, and the report plus the bug ledger *are* the evidence; the decision log, flow map and learning guide are working material that reads badly out of context | The public repo shows the code, the README, the report and the ledger — the day-to-day reasoning is summarised in this report instead |
 | D9 | **Fail loudly rather than emit best-effort code** | Warn and continue | The ledger's P0 bugs were all silent wrong answers; a compiler that refuses is more useful than one that lies | Some valid C is rejected (struct by value, `sizeof`) |
 | D10 | **CI must be green, not "mostly green"** | Accept a red macOS job | A red job that nobody reads is worse than no job; it hid two real defects for days (BUG-030, BUG-031) | Time spent fixing infrastructure instead of features |
 
@@ -656,8 +656,8 @@ single most useful finding of the whole project (§12, BUG-030/031).
 ### 11.2 Repository
 
 - 32 commits, 131 tracked files, branches `main` and `Akshat` both green.
-- `README.md` and this report are published; the engineering notes (decision
-  log, flow map, learning guide, bug ledger) are local by policy (D8).
+- `README.md`, this report and the bug ledger (`report.md`) are published; the
+  decision log, flow map and learning guide are local by policy (D8).
 
 ### 11.3 Optimizer
 
@@ -693,7 +693,7 @@ single most useful finding of the whole project (§12, BUG-030/031).
 
 ## 12. Defect analysis (the most defensible chapter)
 
-The full ledger (`report.md`, local) has 31 entries with reproductions. This
+The full ledger (`report.md`, in this repository) has 31 entries with reproductions. This
 section extracts what a report needs: the *classes*, the *best examples*, and
 what each class taught.
 
@@ -839,9 +839,9 @@ report.
 6. Apple — *Mach-O Programming Topics* (symbol leading underscore, `__TEXT`).
 7. C99 standard (ISO/IEC 9899:1999) — §6.4.4 integer constants, §6.4.5 string
    literals, §6.5 expressions, lvalue conversion.
-8. The project's own documents: `README.md` (public), `decision.md` (decision
-   log), `report.md` (bug ledger), `learn.md` (learning guide), `Flow.md`
-   (execution flow) — local.
+8. The project's own documents: `README.md`, `REPORT-DRAFT.md` (this report) and
+   `report.md` (the 31-entry bug ledger) are published; `decision.md` (decision
+   log), `learn.md` (learning guide) and `Flow.md` (execution flow) are local.
 9. Zeller — *Why Programs Fail* (delta debugging → the fails-before discipline
    used in every ledger entry).
 10. Claessen & Hughes — *QuickCheck* (the idea that generated inputs find what

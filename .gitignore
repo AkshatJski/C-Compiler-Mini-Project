@@ -24,9 +24,10 @@ demo/expected.txt
 decision.docs
 Flow.docs
 learn.docs
-# Bug ledger: datewise, commit-linked, local-only (see the global working
-# agreement). Un-ignore this line to publish it as a showcase artefact.
-report.md
+# Bug ledger: datewise, commit-linked. Published 2026-10-24 at the author's
+# request - the ledger is the project's strongest evidence, and every entry in
+# it is reproducible from this repository's own tests and CI runs.
+# The reasoning notes (decision.md, Flow.md, learn.md) stay local.
 
 # The project report (REPORT-DRAFT.md) is published on purpose - un-ignored
 # 2026-10-24 at the author's request. It is the submission artefact, and every
