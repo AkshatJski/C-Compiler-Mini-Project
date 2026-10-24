@@ -5,15 +5,28 @@
 
 #include "ast.h"
 
-/* Emits AMD64 AT&T assembly for the given program AST. The emitted code is
- * position-independent and uses only registers/instructions available on
- * both System V (Linux) and Microsoft x64 (Windows), so the same output can
- * be assembled with gcc on either platform.
+/* Assembler flavour to emit. Instruction selection is identical on all three
+ * -- the same AMD64 AT&T text assembles everywhere gcc/clang run -- but a few
+ * object-format details differ, so the caller has to say where the output is
+ * going:
  *
- *   windows_target != 0 : omit ELF-only directives (e.g. .note.GNU-stack)
- *                         so GNU as/MinGW on Windows accepts the output.
+ *   TARGET_LINUX   ELF:   plain symbol names + .note.GNU-stack
+ *   TARGET_WINDOWS COFF:  plain names, no ELF-only directives
+ *   TARGET_DARWIN  Mach-O: a leading '_' on every external symbol
+ *
+ * The default is picked at build time in main.c from the host OS. */
+typedef enum
+{
+    TARGET_LINUX = 0,
+    TARGET_WINDOWS = 1,
+    TARGET_DARWIN = 2
+} TargetKind;
+
+/* Emits AMD64 AT&T assembly for the given program AST. The emitted code is
+ * position-independent (all symbol access is %rip-relative), so the result
+ * links with the default PIE settings of the host toolchain.
  *
  * Returns 0 on success, non-zero on failure. */
-int codegen_generate(ASTNode *root, FILE *output, int windows_target);
+int codegen_generate(ASTNode *root, FILE *output, TargetKind target);
 
 #endif /* CODEGEN_H */

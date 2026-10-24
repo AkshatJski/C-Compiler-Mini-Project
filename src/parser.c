@@ -30,8 +30,10 @@ static ASTNode *parse_shift(void);
 static ASTNode *parse_additive(void);
 static ASTNode *parse_multiplicative(void);
 static ASTNode *parse_unary(void);
+static ASTNode *parse_unary_inner(void);
 static ASTNode *parse_primary(void);
 static ASTNode *parse_statement(void);
+static ASTNode *parse_statement_inner(void);
 static ASTNode *parse_block(void);
 static ASTNode *parse_if(void);
 static ASTNode *parse_while(void);
@@ -42,17 +44,36 @@ static ASTNode *parse_jump(const char *keyword);
 static ASTNode *parse_return(void);
 static ASTNode *parse_expr_stmt(void);
 static ASTNode *parse_var_decl(Type *base_type);
-static ASTNode *parse_function_after_name(char *name, Type *ret, int line, int col);
+static ASTNode *parse_function_after_name(char *name, Type *ret, int line,
+                                          int col, int is_extern);
 
-static ASTNode *ast_node(ASTNodeType type, int line, int col)
+/* ------------------------------------------------------------------ */
+/* Nesting guard                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Recursive descent walks one C stack frame per nesting level, so
+ * "((((((...))))))" or 300 nested loops exhaust the 1 MB stack and take the
+ * process down with a segfault (BUG-010). Both the expression and the
+ * statement descent share one counter: the limit is about how deep the parser
+ * can physically recurse, not about which construct caused it. One message
+ * per compilation is enough -- the first report already explains the rule. */
+static int parse_depth = 0;
+static int parse_depth_reported = 0;
+
+static int parse_depth_enter(int line, int col)
 {
-    ASTNode *node = xcalloc(1, sizeof(ASTNode));
-    node->type = type;
-    node->line = line;
-    node->col = col;
-    node->vtype = TYPE_INT;
-    node->val_type = type_int();
-    return node;
+    if (parse_depth >= MYCC_MAX_NEST)
+    {
+        if (!parse_depth_reported)
+        {
+            parse_depth_reported = 1;
+            report_error(line, col,
+                         "nesting too deep (limit is %d levels)", MYCC_MAX_NEST);
+        }
+        return 0;
+    }
+    parse_depth++;
+    return 1;
 }
 
 static void parser_advance(void)
@@ -243,9 +264,30 @@ static Type *parse_type_specifier(void)
 /* Expressions                                                         */
 /* ------------------------------------------------------------------ */
 
+/* Comma is the lowest-precedence operator: `a, b` evaluates `a` for its side
+ * effects and yields `b`. It is applied here so that `parse_assignment` and
+ * everything below it stay comma-free -- which is what lets argument lists and
+ * initialisers keep using ',' as a separator (BUG-007). */
 static ASTNode *parse_expression(void)
 {
-    return parse_assignment();
+    ASTNode *left = parse_assignment();
+    while (left != NULL && parser.current.type == TOKEN_COMMA)
+    {
+        int line = parser.current.line;
+        int col = parser.current.col;
+        parser_advance();
+        ASTNode *right = parse_assignment();
+        if (right == NULL)
+        {
+            return NULL;
+        }
+        ASTNode *node = ast_node(AST_BINARY_OP, line, col);
+        node->op = OP_COMMA;
+        node->left = left;
+        node->right = right;
+        left = node;
+    }
+    return left;
 }
 
 static ASTNode *parse_assignment(void)
@@ -702,6 +744,17 @@ static ASTNode *parse_multiplicative(void)
 
 static ASTNode *parse_unary(void)
 {
+    if (!parse_depth_enter(parser.current.line, parser.current.col))
+    {
+        return NULL;
+    }
+    ASTNode *node = parse_unary_inner();
+    parse_depth--;
+    return node;
+}
+
+static ASTNode *parse_unary_inner(void)
+{
     if (parser.current.type == TOKEN_MINUS)
     {
         int line = parser.current.line;
@@ -831,14 +884,40 @@ static ASTNode *parse_primary(void)
         int col = parser.current.col;
         node = ast_node(AST_INT_LIT, line, col);
         errno = 0;
-        long long value = strtoll(parser.current.value, NULL, 0);
+        char *end = NULL;
+        long long value = strtoll(parser.current.value, &end, 0);
         if (errno == ERANGE)
         {
             report_error(line, col, "integer literal '%s' out of range",
                          parser.current.value);
             return NULL;
         }
+        /* The lexer already validates the digits; this guards the hand-off so
+         * a malformed literal can never silently become 0 (BUG-008). */
+        if (end == parser.current.value || *end != '\0')
+        {
+            report_error(line, col, "invalid integer literal '%s'",
+                         parser.current.value);
+            return NULL;
+        }
         node->value = value;
+        parser_advance();
+    }
+    else if (parser.current.type == TOKEN_STRING)
+    {
+        /* A string literal is an expression of type `char *` whose bytes are
+         * emitted into .rodata (ROADMAP Phase 4). The decoded content is kept
+         * on the node; codegen assigns it a pool label. */
+        int line = parser.current.line;
+        int col = parser.current.col;
+        node = ast_node(AST_STRING, line, col);
+        /* xstrdup would stop at the first NUL byte, so copy the full decoded
+         * range explicitly: "\0A" is a two-byte literal (BUG-023). */
+        node->str_len = parser.current.length;
+        node->name = xmalloc((size_t)node->str_len + 1);
+        memcpy(node->name, parser.current.value, (size_t)node->str_len);
+        node->name[node->str_len] = '\0';
+        node->value = -1; /* pool index, filled in by codegen */
         parser_advance();
     }
     else if (parser.current.type == TOKEN_IDENT)
@@ -857,7 +936,10 @@ static ASTNode *parse_primary(void)
             {
                 for (;;)
                 {
-                    ASTNode *arg = parse_expression();
+                    /* Argument lists are comma-separated, so each argument is
+                     * an assignment-expression; using parse_expression() here
+                     * would swallow the separating comma (BUG-007). */
+                    ASTNode *arg = parse_assignment();
                     if (arg == NULL)
                     {
                         free(name);
@@ -885,16 +967,66 @@ static ASTNode *parse_primary(void)
             node = ref;
         }
     }
-    else if (parser_match(TOKEN_LPAREN))
+    else if (parser.current.type == TOKEN_LPAREN)
     {
-        node = parse_expression();
-        if (node == NULL)
+        int line = parser.current.line;
+        int col = parser.current.col;
+        parser_advance(); /* '(' */
+
+        /* After '(' a type keyword can only be the start of a cast: a type name
+         * never begins an expression, so no lookahead beyond this token is
+         * needed (BUG-006). */
+        if (is_type_start(parser.current.type))
         {
-            return NULL;
+            Type *target = parse_type_specifier();
+            if (target == NULL)
+            {
+                return NULL;
+            }
+            while (parser_match(TOKEN_STAR))
+            {
+                target = type_ptr(target);
+            }
+            if (!parser_expect(TOKEN_RPAREN, "expected ')' after cast type"))
+            {
+                return NULL;
+            }
+            if (target->kind == TYPE_ARRAY)
+            {
+                report_error(line, col, "cannot cast to an array type");
+                return NULL;
+            }
+            if (target->kind == TYPE_STRUCT)
+            {
+                char name[TYPE_DESCRIBE_MAX];
+                type_describe(target, name, sizeof(name));
+                report_error(line, col, "cannot cast to '%s'", name);
+                return NULL;
+            }
+            /* A cast binds tighter than any binary operator, exactly like the
+             * other unary operators. */
+            ASTNode *operand = parse_unary();
+            if (operand == NULL)
+            {
+                return NULL;
+            }
+            ASTNode *cast = ast_node(AST_CAST, line, col);
+            cast->val_type = target;
+            cast->vtype = target->kind;
+            cast->left = operand;
+            node = cast;
         }
-        if (!parser_expect(TOKEN_RPAREN, "expected ')' after expression"))
+        else
         {
-            return NULL;
+            node = parse_expression();
+            if (node == NULL)
+            {
+                return NULL;
+            }
+            if (!parser_expect(TOKEN_RPAREN, "expected ')' after expression"))
+            {
+                return NULL;
+            }
         }
     }
     else
@@ -1094,7 +1226,10 @@ static ASTNode *parse_var_decl(Type *base_type)
                              decl->name);
                 return NULL;
             }
-            ASTNode *init = parse_expression();
+            /* A scalar initializer is an assignment-expression: the comma here
+             * separates declarators, so it must not be eaten by the comma
+             * operator (BUG-007). */
+            ASTNode *init = parse_assignment();
             if (init == NULL)
             {
                 return NULL;
@@ -1472,6 +1607,17 @@ static ASTNode *parse_expr_stmt(void)
 
 static ASTNode *parse_statement(void)
 {
+    if (!parse_depth_enter(parser.current.line, parser.current.col))
+    {
+        return NULL;
+    }
+    ASTNode *node = parse_statement_inner();
+    parse_depth--;
+    return node;
+}
+
+static ASTNode *parse_statement_inner(void)
+{
     switch (parser.current.type)
     {
     case TOKEN_LBRACE:
@@ -1594,12 +1740,14 @@ static int parse_param_list(ASTNode *fn)
     return parser_expect(TOKEN_RPAREN, "expected ')' after parameters");
 }
 
-static ASTNode *parse_function_after_name(char *name, Type *ret, int line, int col)
+static ASTNode *parse_function_after_name(char *name, Type *ret, int line,
+                                          int col, int is_extern)
 {
     ASTNode *fn = ast_node(AST_FUNC_DECL, line, col);
     fn->name = name;
     fn->vtype = ret->kind;
     fn->val_type = ret;
+    fn->is_extern = 0;
 
     if (!parser_expect(TOKEN_LPAREN, "expected '(' after function name"))
     {
@@ -1614,6 +1762,9 @@ static ASTNode *parse_function_after_name(char *name, Type *ret, int line, int c
     if (parser_match(TOKEN_SEMICOLON))
     {
         fn->body = NULL; /* Prototype has no body */
+        /* `extern` only means something without a body: with one, this is an
+         * ordinary definition and the linker needs nothing from elsewhere. */
+        fn->is_extern = is_extern;
         return fn;
     }
 
@@ -1631,13 +1782,14 @@ static ASTNode *parse_global_vars(char *first_name, Type *base_type, int line,
     ASTNode *first = NULL;
     ASTNode **tail = &first;
     char *name = first_name;
+    /* Type for the *next* declarator when it has its own stars, e.g. the `*`
+     * in `int *a, *b;` (BUG-005). Starts out NULL: the first declarator's
+     * stars were already consumed by parse_program(). */
+    Type *pending_type = NULL;
     for (;;)
     {
-        Type *decl_type = base_type;
-        while (parser_match(TOKEN_STAR))
-        {
-            decl_type = type_ptr(decl_type);
-        }
+        Type *decl_type = pending_type != NULL ? pending_type : base_type;
+        pending_type = NULL;
         int is_array = 0;
         decl_type = parse_array_dimensions(decl_type, &is_array);
         if (decl_type == NULL)
@@ -1662,7 +1814,9 @@ static ASTNode *parse_global_vars(char *first_name, Type *base_type, int line,
                              name);
                 return NULL;
             }
-            decl->left = parse_expression();
+            /* See parse_var_decl(): a declarator initializer stops at a comma
+             * because that comma starts the next declarator. */
+            decl->left = parse_assignment();
             if (decl->left == NULL)
             {
                 return NULL;
@@ -1673,6 +1827,11 @@ static ASTNode *parse_global_vars(char *first_name, Type *base_type, int line,
         if (!parser_match(TOKEN_COMMA))
         {
             break;
+        }
+        pending_type = base_type;
+        while (parser_match(TOKEN_STAR))
+        {
+            pending_type = type_ptr(pending_type);
         }
         if (parser.current.type != TOKEN_IDENT)
         {
@@ -1695,10 +1854,21 @@ ASTNode *parse_program(Lexer *lexer)
     parser.previous.type = TOKEN_EOF;
     parser.previous.value = NULL;
     parser.current = lexer_next_token(lexer);
+    parse_depth = 0;
+    parse_depth_reported = 0;
     ASTNode *prog = ast_node(AST_PROGRAM, 1, 1);
     ASTNode **tail = &prog->body;
     while (parser.current.type != TOKEN_EOF)
     {
+        /* `extern` marks a declaration of something the linker supplies
+         * (printf, putchar, ...). It is accepted only at file scope, and only
+         * on a function declaration is it meaningful to this compiler. */
+        int is_extern = 0;
+        if (parser.current.type == TOKEN_KEYWORD_EXTERN)
+        {
+            is_extern = 1;
+            parser_advance();
+        }
         if (!is_type_start(parser.current.type))
         {
             report_error(parser.current.line, parser.current.col,
@@ -1721,6 +1891,15 @@ ASTNode *parse_program(Lexer *lexer)
         if (parser_match(TOKEN_SEMICOLON))
         {
             continue;
+        }
+        /* Pointer declarators at file scope: `int *head;` and
+         * `struct Node *make(void)` both put the stars *before* the name, so
+         * they must be consumed here rather than inside parse_global_vars()
+         * (BUG-005). parse_global_vars() still handles the per-declarator
+         * stars, so `int *a, b;` keeps meaning "pointer a, plain b". */
+        while (parser_match(TOKEN_STAR))
+        {
+            type = type_ptr(type);
         }
         if (parser.current.type != TOKEN_IDENT)
         {
@@ -1746,12 +1925,13 @@ ASTNode *parse_program(Lexer *lexer)
                 report_error(line, col,
                              "function return type 'struct' is not supported");
             }
-            decl = parse_function_after_name(name, type, line, col);
+            decl = parse_function_after_name(name, type, line, col, is_extern);
             if (decl == NULL)
             {
                 free(name);
                 return NULL;
             }
+            decl->is_extern = is_extern;
         }
         else
         {

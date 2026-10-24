@@ -1,11 +1,52 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dump.h"
 #include "tokens.h"
 
 /* ------------------------------------------------------------------ */
 /* Token dump                                                          */
 /* ------------------------------------------------------------------ */
+
+/* Print a token's decoded text with its control characters escaped. Without
+ * this, a string literal containing a newline would split the dump across two
+ * lines and look like a corrupted token stream. `length` is explicit because a
+ * literal may contain NUL bytes (BUG-023). */
+static void print_escaped(FILE *out, const char *s, int length)
+{
+    for (int i = 0; i < length; i++)
+    {
+        unsigned char c = (unsigned char)s[i];
+        switch (c)
+        {
+        case '\n':
+            fputs("\\n", out);
+            break;
+        case '\t':
+            fputs("\\t", out);
+            break;
+        case '\r':
+            fputs("\\r", out);
+            break;
+        case '\\':
+            fputs("\\\\", out);
+            break;
+        case '"':
+            fputs("\\\"", out);
+            break;
+        default:
+            if (c < 0x20 || c >= 0x7f)
+            {
+                fprintf(out, "\\%03o", c);
+            }
+            else
+            {
+                fputc(c, out);
+            }
+            break;
+        }
+    }
+}
 
 void dump_tokens(Lexer *lexer, FILE *out)
 {
@@ -17,7 +58,10 @@ void dump_tokens(Lexer *lexer, FILE *out)
                 token_type_to_string(tok.type));
         if (tok.value != NULL)
         {
-            fprintf(out, "  '%s'", tok.value);
+            fputs("  '", out);
+            print_escaped(out, tok.value,
+                          tok.length > 0 ? tok.length : (int)strlen(tok.value));
+            fputc('\'', out);
         }
         fprintf(out, "\n");
         int done = tok.type == TOKEN_EOF;
@@ -74,6 +118,8 @@ static const char *op_name(int op)
         return ">";
     case OP_GE:
         return ">=";
+    case OP_COMMA:
+        return ",";
     default:
         return "?";
     }
@@ -206,6 +252,12 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_INT_LIT:
         fprintf(out, "INT %lld", node->value);
         break;
+    case AST_STRING:
+        fputs("STRING \"", out);
+        print_escaped(out, node->name != NULL ? node->name : "",
+                      node->name != NULL ? node->str_len : 0);
+        fputc('"', out);
+        break;
     case AST_CALL:
         fprintf(out, "CALL %s", node->name);
         break;
@@ -217,6 +269,9 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         break;
     case AST_MEMBER_ACCESS:
         fprintf(out, "MEMBER .%s", node->name);
+        break;
+    case AST_CAST:
+        fprintf(out, "CAST (%s)", type_name(node->vtype));
         break;
     }
     fprintf(out, "  [%d:%d]\n", node->line, node->col);
@@ -284,6 +339,7 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
     case AST_POSTFIX:
     case AST_ADDR_OF:
     case AST_DEREF:
+    case AST_CAST:
     case AST_MEMBER_ACCESS:
         dump_node(node->left, d, out);
         break;
@@ -292,6 +348,7 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         break;
     case AST_VAR_REF:
     case AST_INT_LIT:
+    case AST_STRING:
         break;
     }
 }

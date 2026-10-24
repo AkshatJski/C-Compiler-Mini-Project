@@ -19,7 +19,7 @@ The overall pipeline looks like this:
 ```
 your_program.c  ──> mycc ──> your_program.s (assembly)
 your_program.s  ──> gcc ──> your_program    (executable)
-your_program    ──> run ──> exit code with the result
+your_program    ──> run ──> output + exit code with the result
 ```
 
 The compiler is deliberately self-contained: a hand-written lexer, a
@@ -31,16 +31,19 @@ Lex, Yacc, or LLVM — everything is plain C.
 
 ```
 C-Compiler-Mini-Project/
-├── Makefile            Build + test automation (Linux / WSL)
+├── Makefile            Build + test automation (Linux / macOS / WSL)
 ├── build.bat           Build script (Windows: compiles mycc.exe)
 ├── test.bat            Test script (Windows: positive + error suites)
-├── showcase.bat        Demo script (Windows: example.c -> run, exit 197)
+├── difftest.sh         Differential test vs the host compiler (Linux / WSL)
+├── difftest.bat        Differential test vs gcc (Windows)
+├── showcase.bat        Demo script (Windows: example.c -> 197, then hello.c prints)
 ├── tour.bat            Guided narrated demo (Windows, press any key)
 ├── tour.sh             Guided narrated demo (Linux / WSL)
 ├── tour2.bat           DEEP-DIVE tour: the four stages, with --dump-tokens
 │                       and --dump-ast (Windows)
 ├── tour2.sh            DEEP-DIVE tour: the four stages (Linux / WSL)
 ├── example.c           Demo program (returns 197)
+├── hello.c             Smallest printing program (Phase 4)
 ├── demos/              Tiny showcase programs (whole assembly fits on screen)
 │   ├── simple.c          square(5)+1 -> exit 26
 │   ├── loop.c            1+2+...+10 -> exit 55
@@ -85,6 +88,15 @@ C-Compiler-Mini-Project/
 │   ├── 16_member_incdec.c ++/-- on struct members (. and ->)
 │   ├── 17_multidim_arrays.c  int m[3][4] / int t[2][3][4], row stride
 │   ├── 18_unsigned.c     unsigned int / unsigned char semantics
+│   ├── 19_comma_operator.c   the comma operator in for-steps and expressions
+│   ├── 20_casts.c        (int) / (char *) / struct-pointer casts
+│   ├── 21_global_pointers.c  global int*, global struct*, pointer returns
+│   ├── 22_struct_assign.c    whole-struct copy (b = a), nested structs
+│   ├── 23_lvalue_single_eval.c  a[i++] += n and a[i++]++ evaluate once
+│   ├── 24_bom.c          a UTF-8 BOM at the start of the file
+│   ├── 25_fall_off_end.c warns about falling off a non-void function
+│   ├── diff/             programs compiled by mycc *and* gcc; the exit
+│   │                     codes must match (see difftest.sh / difftest.bat)
 │   └── errors/           Programs that must be rejected, with EXPECT-ERROR
 ├── mycc                The compiled compiler binary (Linux build result)
 └── mycc.exe            The compiled compiler binary (Windows build result)
@@ -112,13 +124,13 @@ C-Compiler-Mini-Project/
    is what makes nested blocks and variable shadowing work.
 
 4. **Code generation** (`src/codegen.c`) — walks the AST again and emits
-   assembly. Arguments go in six fixed registers (calls into a function use
-   the same six registers on both targets, so caller and callee agree), the
-   stack stays 16-byte aligned at every `call` (required by both the System V
-   and Microsoft x64 ABIs), and function results are returned in `%rax`.
-   No target-specific ELF/COFF details leak into the instruction stream, so
-   the same `.s` output (modulo a few section directives) builds on both
-   Linux and Windows.
+   assembly. Arguments go in the registers the *platform* ABI assigns — six on
+   System V (`%rdi %rsi %rdx %rcx %r8 %r9`), four on Microsoft x64
+   (`%rcx %rdx %r8 %r9` plus a mandatory 32-byte shadow space), with anything
+   further passed on the stack — so caller and callee agree *and* the OS/CRT
+   can be called. The stack stays 16-byte aligned at every `call`, and function
+   results come back in `%rax`. Only symbol-decoration details (a leading `_`
+   on Mach-O, `@PLT` on ELF) and section directives differ between targets.
 
 ---
 
@@ -145,7 +157,9 @@ Everything below is supported by the compiler.
   address, `*p` reads/writes through one, and `p + n`, `p - n`, `p - q`,
   `++p`, `p++`, `p += n` scale by the element size. `0` is the null pointer.
   Pointer differences come back in *elements*, not bytes, and pointers
-  compare as unsigned addresses.
+  compare as unsigned addresses. Pointers work as locals, as parameters, as
+  **globals** (`int *gp;` — zero-initialized) and as **return types**
+  (`struct Node *make(void)`).
 - **Arrays:** `int a[10]`, `char buf[64]`, and any number of dimensions —
   `int m[3][4]`, `int t[2][3][4]` — indexed with `a[i]` / `m[i][j]`.
   An array used in an expression decays to a pointer to its first element,
@@ -156,17 +170,26 @@ Everything below is supported by the compiler.
 - **Structs:** `struct Point { int x; int y; };` with `int`/`char`/pointer/
   struct members (including self-referential `struct Node *next`), access
   via `.` and `->`, nested structs (`o.in.x`), arrays of structs, struct
-  pointers, and global structs (zero-initialized).
+  pointers, and global structs (zero-initialized). Assignment copies the
+  **whole** object (`b = a;`), including nested structs and arrays inside
+  structs. Passing or returning a struct **by value** is rejected — take a
+  pointer (`struct P *p`) instead.
 - Integer literals in decimal (`42`), hexadecimal (`0x2A`), and octal
   (`052`), with optional `u`/`l` suffixes (e.g. `42u`, `0xFFL`). The
   suffixes are accepted but do **not** change the type — declare the
-  variable `unsigned` to get unsigned semantics.
+  variable `unsigned` to get unsigned semantics. A malformed literal is an
+  error, never a silent zero: `08` and `09` (invalid octal digits), `0x`
+  without digits, and an unterminated character constant are all reported
+  at the offending column.
 - Character constants with escapes: `'A'`, `'\n'`, `'\t'`, `'\0'`,
   `'\\'`, `'\''`, and hex escapes like `'\x41'`.
+- A UTF-8 **byte-order mark** at the very start of the file is skipped, so a
+  file saved by a Windows editor (`EF BB BF int main…`) compiles normally.
 
 ### Operators (with correct precedence)
 | Group                | Operators                          |
 |----------------------|------------------------------------|
+| Comma                | `,`                                |
 | Assignment           | `=  +=  -=  *=  /=  %=`            |
 | Compound bitwise     | `&=  \|=  ^=  <<=  >>=`            |
 | Conditional          | `?:`                               |
@@ -180,10 +203,25 @@ Everything below is supported by the compiler.
 | Shift                | `<<  >>`                           |
 | Additive             | `+  -`                             |
 | Multiplicative       | `*  /  %`                          |
+| Cast                 | `(type)expr`                       |
 | Unary                | `-  +  !  ~`                       |
 | Prefix               | `++x  --x`                         |
 | Postfix              | `x++  x--`                         |
 
+- The **comma operator** evaluates the left operand for its side effects and
+  yields the right one: `a = (b = 1, b + 1)` sets `b` and then `a` to 2. Its
+  main use is a `for` step — `for (int i = 0, j = n; i < j; i++, j--)`. It is
+  *not* the comma that separates arguments: `f(a, b)` still takes two
+  arguments, because an argument list is parsed at a higher precedence than
+  the comma operator.
+- **Casts** convert between the supported types: `(int)x`, `(char)x`,
+  `(unsigned char)x`, `(unsigned int)x`, `(int *)p`, `(struct Node *)0`. A
+  cast is also the explicit opt-in for the conversions that are otherwise
+  errors — `(int *)some_int` is accepted where `p = some_int` is not.
+- An lvalue with a **side effect** is evaluated exactly once, including on
+  the left of `op=` and under `++`/`--`: `a[i++] += 5` increments `i` once,
+  and `*p++ = 1` stores through the old `p`. (Both used to be wrong; see the
+  bug ledger, `report.md`.)
 - `&&` and `||` use **short-circuit evaluation**: the right operand is only
   evaluated if the left operand does not already decide the result. This
   means `0 && (1 / 0)` is safe (no division by zero).
@@ -211,19 +249,77 @@ Everything below is supported by the compiler.
 - `break;` (leaves the innermost loop or switch) and `continue;` (next
   iteration of the innermost loop)
 - `return expr;` and `return;`
+- Nesting is **bounded**: blocks and expressions deeper than 256 levels are
+  rejected with `error: nesting too deep (limit is 256 levels)` (or
+  `expression nested too deeply`) instead of crashing the compiler.
 
 ### Functions
-- Global functions returning `int` or `void`, with `void` or empty parameter
-  lists. (`char` and `unsigned char` return types are not supported — use
-  `int` or `unsigned int`.)
-- Up to **6 parameters** (the x86-64 register-argument limit we support).
+- Global functions returning `int`, `unsigned int`, or `void`, with `void` or
+  empty parameter lists. A pointer return type is allowed
+  (`int *pick(void)`, `struct Node *make(void)`). (`char` and
+  `unsigned char` return types are not supported — use `int` or
+  `unsigned int`.)
+- Any number of parameters: the first four (Windows) or six (System V/Linux,
+  macOS) travel in registers and the rest are passed on the stack, exactly as
+  the platform ABI specifies.
+  Parameters may be scalars, pointers, or arrays (which decay to pointers);
+  a **struct by value** is rejected with a message suggesting the pointer
+  form.
+- `main` must be declared `int main(void)`. Programs without `main`, or that
+  *call* a function which is declared but never defined, are rejected during
+  compilation rather than failing later at link time.
 - **Recursion** (functions call themselves safely).
 - **Forward references**: a function may call another function that is
   defined later in the file.
 - Nested function calls, and calls inside expressions:
   `add(mul(a, b), divq(a, b))`.
-- A non-`void` function that falls off its end returns `0` (as in C's
-  implicit `return 0` for `main`, extended to all functions here).
+- A non-`void` function that can reach its closing brace returns `0`
+  (C only guarantees that for `main`) **and** produces a warning:
+  `warning: control reaches end of non-void function 'f'`. The exit status is
+  unaffected — warnings are advisory (see "Warnings" below).
+
+### Printing and library calls
+- **String literals** — `"hello\n"` is a `char *` pointing at bytes the
+  compiler places in `.rodata` (Mach-O: `__TEXT,__cstring`). Identical literals
+  are emitted once and shared. All C escapes work: `\n \t \r \0 \a \b \f \v \\
+  \' \" \xHH` and octal `\ooo`.
+- **Four printing built-ins**, usable with no declaration and no `#include`:
+
+  | call | prints |
+  |---|---|
+  | `print_int(x)` | `x` in decimal, then a newline |
+  | `print_char(c)` | one character |
+  | `print_str(s)` | a `char *` string, no newline added |
+  | `print_endl()` | one newline |
+
+  They are ordinary symbols as far as checking is concerned: a call is
+  type-checked like any other function call. Semantic analysis then rewrites
+  `print_int(x)` into `printf("%lld\n", x)`, `print_str(s)` into
+  `printf("%s", s)`, `print_char(c)` into `putchar(c)` and `print_endl()` into
+  `putchar('\n')`, so code generation has no special cases and `--dump-ast`
+  shows the call that will actually run. Defining your own function with one
+  of these names overrides the built-in.
+- **`extern` declarations** bring in any C library function:
+
+  ```c
+  extern int printf(char *fmt);     /* the body lives in the C runtime */
+  ```
+
+  An `extern` prototype needs no definition (it is exempt from the
+  declared-but-never-defined check) and is checked with **variadic** arity:
+  at least the declared parameters, and any number more. `printf`, `puts` and
+  `putchar` are pre-registered, so the common cases need no declaration at
+  all:
+
+  ```c
+  int main(void) {
+      printf("x = %lld, name = %s\n", 42, "mycc");
+      return 0;
+  }
+  ```
+
+  Because mycc's `int` is 64-bit, `%lld` is the correct specifier for it on
+  all three targets (`%d` would read only 32 bits).
 
 ### Variables and scope
 - Global variables, including ones with **constant-folded initializers**
@@ -238,12 +334,59 @@ Everything below is supported by the compiler.
 - `// line comment` and `/* block comment */`
 
 ### Error reporting
-The compiler reports problems with file, line, and column, for example:
+The compiler reports problems with file, line, and column, then quotes the
+offending line and points at the column:
 
 ```
 prog.c:3:9: error: undeclared variable 'y'
+     3 |     int z = y;
+       |             ^
 prog.c: compilation aborted during semantic analysis
 ```
+
+The snippet is deliberately conservative: lines longer than a terminal are
+clipped (a wrapped line makes the caret point at the wrong thing), tabs pass
+through on both rows so they stay aligned, a column past the end of the line
+puts the caret at the end, and a diagnostic with no source position (line 0,
+from a synthesised tree node) prints the message alone. The message line itself
+is unchanged, which is why the `EXPECT-ERROR:` markers in `tests/errors/` still
+match.
+
+Unsupported constructs get one precise message instead of a cascade — a
+preprocessor line says `error: preprocessor directives are not supported by
+mycc (no #include, #define, #if)`, and an unclosed string says `error:
+unterminated string literal`. Neither is followed by bogus follow-on
+errors: the lexer keeps reading after reporting.
+
+A failed compilation also leaves **no output file** behind: the assembly is
+written to a temporary file next to the target and only renamed into place
+when generation succeeds. A stale `.s` from an earlier successful build
+therefore survives a failed rebuild untouched.
+
+### Warnings (advisory diagnostics)
+Some problems do not stop the compile, so they are reported as warnings:
+
+```
+prog.c:2:1: warning: control reaches end of non-void function 'maybe'
+     2 | int maybe(int a) { if (a) return 1; }
+       | ^
+```
+
+- The format is `<file>:<line>:<col>: warning: <message>`, followed by the same
+  source snippet and caret that errors get.
+- A warning **never** changes the exit status: `mycc` still returns 0 and
+  writes the assembly.
+- `-w` silences the whole warning channel. Errors are never silenced.
+
+```c
+int maybe(int a) { if (a) return 1; }   /* warning: control reaches end … */
+```
+
+### Where warnings sit
+There is exactly one warning today (falling off the end of a non-`void`
+function). The mechanism — a separate counter from `report_error()`, plus the
+`-w` switch — exists so that later passes (unused variables, sign
+comparisons, …) can be added without touching the error path.
 
 ---
 
@@ -285,10 +428,24 @@ prog.c: compilation aborted during semantic analysis
   pushed onto the stack, then popped into the argument registers in order.
   Pushing instead of filling registers directly is what makes nested calls
   safe (`add(add(a,b), add(1,2))`) — an inner call can never clobber an
-  argument register that is still needed. The stack is padded to stay
-  16-byte aligned at the `call` instruction — a requirement shared by both
-  the System V AMD64 and Microsoft x64 ABIs, so the same scheme works for
-  Linux and Windows.
+  argument register that is still needed. Any argument beyond the register
+  slots is simply *not* popped, so it stays on the stack in exactly the order
+  the callee expects. The stack is padded to stay 16-byte aligned at the
+  `call` instruction, counting the stack arguments and the Windows home area.
+
+  The registers are the platform's, not a private convention:
+
+  | | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th+ | shadow space | variadic marker |
+  |---|---|---|---|---|---|---|---|---|---|
+  | System V (Linux, macOS) | `%rdi` | `%rsi` | `%rdx` | `%rcx` | `%r8` | `%r9` | stack | none | `%al` = 0 |
+  | Microsoft x64 (Windows) | `%rcx` | `%rdx` | `%r8` | `%r9` | stack | stack | stack | 32 bytes | none |
+
+  The callee copies its register parameters into its own frame and reads stack
+  arguments from above it — `16(%rbp)` on System V, `48(%rbp)` on Windows
+  (past the saved `%rbp`, the return address, and the 32-byte home area).
+  External calls are emitted as `name@PLT` on ELF so position-independent
+  output still links; a call to a function defined in the same file stays a
+  plain `call`. On Mach-O every symbol gets a leading `_`.
 
 - **Recursion safety.** Parameters are spilled into the *callee's own* stack
   frame at negative offsets (`-8(%rbp)`, `-16(%rbp)`, ...). An earlier
@@ -358,6 +515,68 @@ prog.c: compilation aborted during semantic analysis
   tracks the innermost enclosing switch, and each label is emitted at its
   source position, including inside nested compound statements). A nested
   `switch` owns its own labels and numbering.
+
+- **Lvalues are evaluated once.** `x op= e` is still desugared into
+  `x = x op e`, but the *code generator* now recognises the compound-assign
+  shape, computes the address of `x` **once**, keeps it in a stack slot, and
+  loads/stores through it (`gen_compound_assign`). The same trick serves
+  postfix `++`/`--` on computed lvalues: the address is formed once, the old
+  value read through it, and the new value stored back. Before this, `a[i++] += 5`
+  incremented `i` twice — the AST still shows two occurrences of `a[i++]`,
+  which is why the fix had to live in codegen (and why `--dump-ast` shows the
+  desugared form, not the fixed one).
+
+- **…and once only.** The parser rewrites `a[i]` into `*(a + i)`, and semantic
+  analysis *inserts* the `index * sizeof(elem)` multiplication into the tree
+  so codegen only ever adds. That insertion is not idempotent: walking the
+  same node twice scaled the index twice, so `a[i] += 1` addressed
+  `a[i * 64]` on 64-bit elements. The compound-assignment case now checks only
+  the right-hand operand and types the operation itself, so each node reaches
+  the scaling code exactly once (`scale_index_operand`).
+
+- **Casts.** `(type)expr` becomes an `AST_CAST` node. Semantics simply
+  replaces the value's type; codegen emits nothing where the representation is
+  unchanged (pointer ↔ pointer, `int` ↔ `unsigned`), and a truncate/extend
+  pair where it is not (`(char)x` → `movsbq`, `(unsigned char)x` → `movzbq`).
+  Because the result type is known, a cast also legalises the conversions that
+  assignment otherwise rejects.
+
+- **The comma operator** is one extra precedence level: `parse_expression()`
+  loops over `parse_assignment()` separated by `,`, building a left-associative
+  node whose codegen is "evaluate left for effect, then evaluate right and keep
+  its value" — no instruction is emitted for the operator itself. Argument
+  lists keep calling `parse_assignment()`, so `f(a, b)` is unaffected.
+
+- **Whole-struct copy** uses `rep movsb` with `%rsi` = address of the source,
+  `%rdi` = address of the destination and `%rcx` = `type->size`. All three are
+  caller-saved argument registers, and codegen holds nothing live in them at
+  that point (the `pushed_count` bookkeeping keeps the stack aligned across
+  calls), so one instruction copies a struct of any size, nested structs
+  included. This is the one place codegen deliberately clobbers argument
+  registers, and it is commented as such.
+
+- **Warnings are a separate channel.** `report_warning()` mirrors
+  `report_error()` but increments its own counter and never affects the exit
+  status; `-w` flips a file-static flag that `error_reset()` deliberately does
+  not touch, so the switch survives argument parsing. Semantic analysis asks
+  "can this function reach its closing brace?" (`stmt_terminates`, a small
+  recursive path analysis) and warns once per function when the answer is yes.
+
+- **Never crash on input.** Two explicit depth guards keep hostile input from
+  killing the process: the parser counts recursion depth in
+  `parse_statement`/`parse_primary`/`parse_unary`, and codegen's
+  `break`/`continue`/`switch` target stacks check their depth before writing.
+  Both share one limit (`MYCC_MAX_NEST`, 256) and report a normal
+  `file:line:col` error. The same value is documented in "Not supported", so
+  the limit is part of the language's contract rather than an accident.
+
+- **One code generator, three object formats.** Instruction selection is
+  identical everywhere; only symbol naming and one directive differ. A
+  `TargetKind` (`TARGET_LINUX` / `TARGET_WINDOWS` / `TARGET_DARWIN`) is picked
+  from the host at build time and overridable with `--target=`; a single
+  `sym_name()` helper is the only place a program symbol is spelled, so
+  Mach-O's leading underscore is applied to definitions and references alike,
+  and the ELF-only `.note.GNU-stack` directive is skipped on the other two.
 
 ---
 
@@ -468,19 +687,35 @@ set CC=C:\msys64\ucrt64\bin\gcc.exe
 
 This compiles every `tests\*.c` (positive tests), assembles each into an
 `.exe`, runs it, and compares the exit code with the `EXPECT:` marker in the
-file. It then runs every `tests\errors\*.c` and checks that `mycc` rejects it
-with the diagnostic named by `EXPECT-ERROR:`. **Expected output (abridged):**
+file. A `WARN:` marker additionally requires the compile to succeed *and*
+print that warning text. It then runs every `tests\errors\*.c` and checks that
+`mycc` rejects it with the diagnostic named by `EXPECT-ERROR:`, and finally
+checks two contracts: a failed compile leaves no output file, and `-w`
+silences the warning channel. **Expected output (abridged):**
 
 ```
 PASS: tests\01_arithmetic.c (exit 0)
 PASS: tests\02_conditionals.c (exit 0)
 ...
-PASS: tests\18_unsigned.c (exit 0)
+PASS: tests\25_fall_off_end.c (exit 0)
 PASS: tests\errors\break_outside.c (rejected)
 ...
 PASS: tests\errors\void_variable.c (rejected)
+PASS: failed compile leaves no output file
+PASS: -w silences warnings without failing the build
 
 All tests passed
+```
+
+`difftest.bat` then goes one step further: it compiles each
+`tests\diff\*.c` **twice** — once with `mycc.exe`, once with gcc — runs both
+and requires the same exit code. The exit-code suite cannot tell "correct"
+from "wrong but plausible"; this can.
+
+```
+PASS: tests\diff\01_compound_and_lvalue.c (both returned 0)
+
+All differential tests passed
 ```
 
 ### 5.3 Run the end-to-end showcase
@@ -489,21 +724,48 @@ All tests passed
 .\showcase.bat
 ```
 
-This compiles `example.c`, assembles it, runs it, and prints the result.
+This compiles `example.c`, assembles it, runs it, and prints the result — then
+does the same for `hello.c`, whose output you can read.
 **Expected output:**
 
 ```
-[1/3] Compiling example.c to assembly...
-[2/3] Assembling and linking...
-[3/3] Running...
+[1/5] Compiling example.c to assembly...
+[2/5] Assembling and linking...
+[3/5] Running...
 
-The program returned: 197
-Expected:               197
+  The program returned: 197
+  Expected:             197
+
+[4/5] Compiling hello.c (real output, Phase 4)...
+[5/5] Running it...
+--------------------------------------------
+Hello, world!
+120
+3 + 4 = 7, and 2 * 21 = 42
+--------------------------------------------
 ```
 
 Why 197? `example.c` computes `fact(5) = 120` plus the sum of primes up to
 20 (`2+3+5+7+11+13+17+19 = 77`), so `120 + 77 = 197`. The exit code being
-exactly 197 proves the compiler works end to end on Windows.
+exactly 197 proves the compiler works end to end on Windows; `hello.c` then
+proves the Phase 4 calling convention by printing through the C runtime.
+
+### 5.3b Run the five-minute demo
+
+```
+.\demo.bat
+```
+
+Five scenes aimed at someone who does not write code: it prints, it takes their
+name and prints it back, it compiles one program twice and shows 39 lines of
+assembly against 81 with identical behaviour, it proves authorship with
+`--version` and `--sign` (the finished `.exe` carries a mycc string), and it
+finishes by running both test suites and reporting the verdict.
+
+`DEMO.md` is the presenter script for it (60-second, three-minute and
+five-minute cuts, the questions you will be asked, and what to do if something
+breaks live). `demo\expected.txt` is a real captured transcript, for reading out
+loud if the machine misbehaves mid-demo.
 
 ### 5.4 Manual usage (the commands behind the scripts)
 
@@ -517,7 +779,31 @@ echo %errorlevel%                          # shows 197
 Notes:
 - `mycc.exe` on Windows automatically emits Windows-compatible assembly.
 - `--target=windows` is implied for a MinGW-built `mycc.exe`; you can also
-  pass it explicitly: `mycc.exe --target=windows example.c -o out.s`.
+  pass it explicitly: `mycc.exe --target=windows example.c -o out.s`. The
+  other flavours are `--target=linux` (ELF, the default on Linux and WSL) and
+  `--target=darwin` (Mach-O symbols for macOS). An unknown name is a clean
+  error: `error: unknown target 'beos' (use linux, windows or darwin)`.
+- `-w` silences warnings (errors are unaffected), e.g.
+  `mycc.exe -w src.c -o out.s`.
+- `--no-opt` turns off the Phase 5 optimizer (constant folding,
+  constant-condition elimination and constant operands). Useful for showing what
+  the optimizer actually did: compile the same file twice and compare the
+  assembly, e.g. `mycc.exe demo.c -o opt.s` and `mycc.exe --no-opt demo.c -o
+  plain.s`. The program behaves identically either way — that is the invariant
+  the test suite enforces by running every program in `tests\` through both
+  paths.
+- `--version` prints what the compiler is, which targets it can emit and whether
+  the optimizer is on, then exits without needing a source file.
+- `--sign` embeds one provenance string in the program's read-only data, so the
+  finished binary can name the compiler that produced it:
+
+  ```
+  mycc.exe --sign hello.c -o build\signed.s
+  gcc -o build\signed.exe build\signed.s
+  strings build\signed.exe | findstr mycc
+  ```
+
+  Off by default — a compiler should not put bytes in a program unless asked.
 - Two diagnostic flags show the compiler's inner workings:
   - `mycc.exe --dump-tokens demos\simple.c` — print the lexer output: every
     token (number, identifier, keyword, operator, bracket) with its
@@ -582,7 +868,7 @@ Sanity check:
 ```
 ls
 ```
-Expected: `Makefile  build.bat  build  demos  example.c  include  instructions.md  mycc  README.md  ROADMAP.md  src  test.bat  tests`
+Expected: `Makefile  build.bat  build  demos  difftest.bat  difftest.sh  example.c  hello.c  include  instructions.md  mycc  README.md  ROADMAP.md  src  test.bat  tests`
 
 ### 6.2 Build the compiler
 
@@ -608,11 +894,25 @@ Expected output (abridged):
 PASS: tests/01_arithmetic.c (exit 0)
 PASS: tests/02_conditionals.c (exit 0)
 ...
-PASS: tests/18_unsigned.c (exit 0)
+PASS: tests/25_fall_off_end.c (exit 0)
 PASS: tests/errors/break_outside.c (rejected)
 ...
 PASS: tests/errors/void_variable.c (rejected)
+PASS: failed compile leaves no output file
+PASS: -w silences warnings without failing the build
 All tests passed
+```
+
+Then the differential test, which compiles `tests/diff/*.c` with both mycc and
+the host compiler and requires identical exit codes:
+
+```
+make difftest
+```
+
+```
+PASS: tests/diff/01_compound_and_lvalue.c (both returned 0)
+All differential tests passed
 ```
 
 ### 6.4 Watch a program become assembly
@@ -778,6 +1078,66 @@ int sum_row(int *row, int n) {
 }
 ```
 
+It returns 0. Note the two `big` checks: they encode mycc's **64-bit** `unsigned`
+(`big << 63` reaches 2^63). A 32-bit-`unsigned` compiler gives a different
+answer there, which is exactly why programs under `tests/diff/` must stay
+width-agnostic — see the header of `tests/diff/01_compound_and_lvalue.c`.
+
+### The newest additions: commas, casts, global pointers, struct copy
+
+This program returns 0 (verified against gcc; also in `tests/19`–`tests/23`):
+
+```c
+struct Node { int val; struct Node *next; };
+
+int *g_head;                     /* global pointer, zero-initialized */
+int g_ints[4];                   /* global array */
+struct Node g_nodes[4];          /* global array of structs */
+
+int *pick(int *base, int i) {    /* pointer return type */
+    return base + i;             /* scaled by sizeof(int) */
+}
+
+int main(void) {
+    /* comma operator: two counters in one for step */
+    int pairs = 0;
+    for (int i = 0, j = 6; i < j; i++, j--) pairs++;
+    if (pairs != 3) return 1;
+
+    /* comma as an expression: evaluates left for effect, yields right */
+    int b = 0;
+    int a = (b = 5, b + 1);
+    if (a != 6 || b != 5) return 2;
+
+    /* casts: explicit conversions, including legalising int -> pointer */
+    char c = (char)300;              /* truncates to 44 */
+    if (c != 44) return 3;
+    int *p = (int *)0;               /* null, written explicitly */
+    if (p != 0) return 4;
+
+    /* struct assignment copies every member */
+    struct Node n1;
+    n1.val = 7;
+    n1.next = (struct Node *)0;
+    struct Node n2 = n1;             /* or: struct Node n2; n2 = n1; */
+    if (n2.val != 7) return 5;
+
+    /* a global pointer filled by a pointer-returning function */
+    g_ints[2] = 9;
+    g_head = pick(g_ints, 2);
+    if (g_head != &g_ints[2] || *g_head != 9) return 6;
+
+    /* pointer arithmetic over a global array of structs scales by the
+     * struct size, not by sizeof(int) */
+    g_nodes[1].val = 4;
+    struct Node *np = &g_nodes[0];
+    np = np + 1;
+    if (np->val != 4) return 7;
+
+    return 0;
+}
+```
+
 ### Not supported (by design)
 - No `float`/`double`, `long`/`short`, `enum`/`typedef`, or bitfields.
   (`unsigned` *is* supported — see §2 Data. `int` stays 64-bit, so
@@ -785,13 +1145,21 @@ int sum_row(int *row, int n) {
 - No aggregate initializers: `int a[2] = {1,2}` and
   `struct Point p = {1,2}` are rejected — assign element by element.
   Uninitialized **local** objects are therefore indeterminate, not zero.
+- No **struct by value**: passing or returning a struct is an error; take a
+  pointer. Everything else about structs (members, `->`, nested, arrays,
+  whole-struct copy) works.
 - No run-time bounds checking on `a[i]` (indexing trusts the programmer, as
   in C), and no `sizeof`.
-- Function return type must be `int` or `unsigned int` (or `void`); `char`
-  returns are rejected. Function *parameters* are declared as pointers —
-  `int f(int a[10])` is a syntax error; write `int f(int *a)` instead.
-- No `#include`, no preprocessor, no string literals, no printing.
-  Programs communicate results through their **exit code** (`return`).
+- Nesting deeper than 256 levels (blocks or expressions) is rejected; there
+  is no way to raise that limit except rebuilding.
+- Function return type must be `int`, `unsigned int`, `void`, or a pointer
+  type; `char` returns are rejected. Function *parameters* are declared as
+  pointers — `int f(int a[10])` is a syntax error; write `int f(int *a)`
+  instead.
+- No `#include` and no preprocessor. `printf` and friends are reachable
+  through `extern` (or are pre-registered), and the four `print_*` built-ins
+  cover the common cases - see "Printing and library calls" above.
+- `main` must be `int main(void)`: `argc`/`argv` are not available yet.
 - `switch` supports integer/enum-style cases only — no `range` cases, and
   `case` labels must be compile-time constants.
 
@@ -805,13 +1173,20 @@ int sum_row(int *row, int n) {
 | `'.\build.bat' is not recognized`                | Run in PowerShell/CMD from the project folder (section 5). |
 | `mycc.exe` not found                             | Run `.\build.bat` first (section 5.1). |
 | `export: The term 'export' is not recognized...` | You are in PowerShell but followed the WSL steps. Run `wsl` first (section 6.1), or use the Windows steps in section 5. |
-| `make: command not found`                        | Re-run the two `export` lines from section 6.1 in this terminal. |
-| `gcc: command not found` (in WSL)                | Same as above — the private toolchain is not on `PATH`. |
+| `make: command not found`                        | make is not installed in WSL — `sudo apt install build-essential` (section 4, Option B). |
+| `gcc: command not found` (in WSL)                | gcc is not installed in WSL — `sudo apt install build-essential` (section 4, Option B). |
 | `cannot open source file '...'`                  | The file does not exist, or the path has a typo/spaces issue; quote the path. |
 | `error: unexpected character`                    | The program uses a feature the language does not support (see section 7). |
+| `error: preprocessor directives are not supported` | `#include`, `#define` and `#if` do not exist in the subset (section 7). Library functions are reached through `extern`, or use the `print_*` built-ins. |
+| `error: unterminated string literal` | The closing `"` is missing, or the literal spans a line break. |
+| Linker error naming an undefined symbol | The call has no definition and was not declared `extern`. Declare it (`extern int printf(char *fmt);`) or implement it. |
+| `error: nesting too deep (limit is 256 levels)`  | The program nests blocks/expressions more than 256 deep — restructure it. |
+| `warning: control reaches end of non-void function` | A non-`void` function can reach its closing brace. Add a `return`, or silence it with `-w`. |
+| `make difftest` prints a mismatch                   | mycc and gcc disagree: a real miscompilation. Worth reporting/fixing. |
 | `FAIL: ... expected exit X, got Y`               | A genuine compiler bug — this is worth reporting/fixing. |
-| Linker errors like `cannot find libc_nonshared` | `LD_LIBRARY_PATH` is missing; re-run the exports. |
+| Linker errors like `undefined reference to 'helper'` | Older builds only: mycc now rejects a declared-but-undefined function during compilation (section 2). |
 | `mycc` not found (in WSL)                        | You are not in the project folder, or the build in 6.2 has not been run. |
+| `-no-pie: unknown argument` (macOS)              | You are linking by hand on macOS — drop `-no-pie` (the Makefile does this for you). |
 
 ---
 
@@ -823,6 +1198,7 @@ int sum_row(int *row, int n) {
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat
 .\test.bat        # all tests should pass
+.\difftest.bat    # mycc and gcc must agree on tests\diff\*.c
 .\showcase.bat    # should print "The program returned: 197"
 ```
 
@@ -833,6 +1209,7 @@ cd "/mnt/c/Folder D/Feature_anant/C-Compiler-Mini-Project"
 make clean
 make
 make test                              # all tests should pass
+make difftest                          # mycc and gcc must agree
 ./mycc example.c -o /tmp/demo.s
 gcc -no-pie -o /tmp/demo /tmp/demo.s
 /tmp/demo
@@ -892,7 +1269,7 @@ stages** using the new dump flags:
 5. **Stage 4, codegen**: `mycc demos\simple.c` prints the assembly; walk
    the frame setup, the `push/pop` expression engine, and `call`.
 6. End to end: `example.c` → 197, plus the full test suite, then a
-   by-file line count of the ~3,500-line hand-written compiler.
+   by-file line count of the ~6,600-line hand-written compiler.
 
 Great talking point: the same tree you can print with `--dump-ast` is
 exactly what the code generator walks to emit assembly.
@@ -900,7 +1277,7 @@ exactly what the code generator walks to emit assembly.
 ### The one-line explanations
 
 - "A compiler turns readable code into CPU instructions. gcc does this
-  inside a black box; mycc is ~3,500 lines of C that shows you every step."
+  inside a black box; mycc is ~7,000 lines of C that shows you every step."
 - "mycc emits **exactly** what you write — one instruction per operation.
   gcc is an optimizer that rewrites your program until it no longer looks
   like your source. For learning, readable wins; for production, gcc wins."
@@ -910,11 +1287,13 @@ exactly what the code generator walks to emit assembly.
 
 ### Alternate quick demos
 
-- **The return-code trick**: `.\demos` programs have no `printf` — they
-  "print" by their exit code. `mycc.exe demos\loop.c -o build\loop.s`,
-  then `gcc -o build\loop.exe build\loop.s` and run it → `%errorlevel%`
-  is `55`.
-- **Read the whole compiler**: `src/` is ~3,500 lines across 8 files.
+- **Exit codes are still a fine output channel**: `demos\loop.c` "prints" by
+  returning its result. `mycc.exe demos\loop.c -o build\loop.s`, then
+  `gcc -o build\loop.exe build\loop.s` and run it → `%errorlevel%` is `55`.
+- **Show real output instead**: `mycc.exe tests\26_hello_world.c -o
+  build\hello.s`, link it, and it prints `Hello, world!` — the same program,
+  now talking to the CRT through the platform ABI.
+- **Read the whole compiler**: `src/` is ~6,600 lines across 8 files.
   `src/codegen.c` is the shortest path to "aha" — it is just a walk over
   the syntax tree emitting instructions.
 - **Catch a mistake live**: feed mycc a broken program and show the

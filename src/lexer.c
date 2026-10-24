@@ -6,12 +6,29 @@
 #include "lexer.h"
 #include "util.h"
 
+/* `#include`, `#define` and friends belong to the preprocessor, which mycc
+ * does not implement. Every line that starts with '#' in trivia position is
+ * therefore skipped whole and reported *once* per compilation: reporting it
+ * per line turns a single `#include` into a wall of identical errors. */
+static int g_directive_reported = 0;
+
 void lexer_init(Lexer *lexer, const char *source)
 {
     lexer->source = source;
     lexer->pos = 0;
     lexer->line = 1;
     lexer->col = 1;
+    g_directive_reported = 0;
+
+    /* A UTF-8 byte-order mark is invisible but would otherwise be lexed as
+     * two stray high-bit characters (BUG-011). Editors on Windows write it
+     * by default, so skipping it here is worth the four lines. */
+    if ((unsigned char)source[0] == 0xEF &&
+        (unsigned char)source[1] == 0xBB &&
+        (unsigned char)source[2] == 0xBF)
+    {
+        lexer->pos = 3;
+    }
 }
 
 static int at_end(const Lexer *lexer)
@@ -55,6 +72,7 @@ static Token make_token(TokenType type, char *value, int line, int col)
     token.value = value;
     token.line = line;
     token.col = col;
+    token.length = 0; /* only string literals set this (BUG-023) */
     return token;
 }
 
@@ -96,6 +114,25 @@ static void skip_trivia(Lexer *lexer)
             {
                 report_error(start_line, start_col, "unterminated block comment");
                 return;
+            }
+        }
+        else if (c == '#')
+        {
+            /* Preprocessor directive: not supported, but the *reason* matters
+             * more than the symptom, and one report per file is enough. The
+             * whole physical line is dropped so the parser sees clean input
+             * (BUG-012). */
+            if (!g_directive_reported)
+            {
+                g_directive_reported = 1;
+                report_error(lexer->line, lexer->col,
+                             "preprocessor directives are not supported "
+                             "(mycc has no #include/#define; write "
+                             "self-contained code)");
+            }
+            while (!at_end(lexer) && peek(lexer) != '\n')
+            {
+                advance(lexer);
             }
         }
         else
@@ -142,6 +179,7 @@ static Token lex_ident_or_keyword(Lexer *lexer)
         {"continue", TOKEN_KEYWORD_CONTINUE},
         {"return", TOKEN_KEYWORD_RETURN},
         {"struct", TOKEN_KEYWORD_STRUCT},
+        {"extern", TOKEN_KEYWORD_EXTERN},
     };
 
     TokenType type = TOKEN_IDENT;
@@ -184,9 +222,26 @@ static Token lex_number(Lexer *lexer)
     }
     else
     {
+        /* A leading 0 with more digits means octal, so "08" and "09" are
+         * errors rather than silently becoming 0 (BUG-008). Validate the
+         * digits we just consumed; report at the offending column. */
+        int octal = peek(lexer) == '0';
         while (isdigit((unsigned char)peek(lexer)))
         {
             advance(lexer);
+        }
+        if (octal)
+        {
+            for (size_t p = start + 1; p < lexer->pos; p++)
+            {
+                if (lexer->source[p] > '7')
+                {
+                    report_error(start_line, start_col + (int)(p - start),
+                                 "invalid digit '%c' in octal constant",
+                                 lexer->source[p]);
+                    break;
+                }
+            }
         }
     }
     /* Optional integer suffix (U / L / UL / LL / ULL in any reasonably
@@ -223,8 +278,6 @@ static int read_escape(Lexer *lexer)
         return '\t';
     case 'r':
         return '\r';
-    case '0':
-        return '\0';
     case 'a':
         return '\a';
     case 'b':
@@ -258,6 +311,21 @@ static int read_escape(Lexer *lexer)
         return value;
     }
     default:
+        /* Octal escapes: one to three digits, e.g. \0 (NUL), \101 ('A'),
+         * \377. `\0` is just the one-digit case, so it needs no separate arm
+         * (BUG-022: this was missing, and only became visible once string
+         * literals were emitted as real data). */
+        if (c >= '0' && c <= '7')
+        {
+            int value = c - '0';
+            int digits = 1;
+            while (digits < 3 && peek(lexer) >= '0' && peek(lexer) <= '7')
+            {
+                value = value * 8 + (advance(lexer) - '0');
+                digits++;
+            }
+            return value;
+        }
         report_error(lexer->line, lexer->col, "unknown escape sequence '\\%c'", c);
         return c;
     }
@@ -304,12 +372,78 @@ static Token lex_char_literal(Lexer *lexer)
     return make_token(TOKEN_CHAR_LIT, xstrdup(text), start_line, start_col);
 }
 
+/* String literals (ROADMAP Phase 4). The decoded bytes live in the token and
+ * are later emitted into .rodata, so `"hello\n"` is a real `char *` a program
+ * can hand to printf.
+ *
+ * Escapes are decoded here, reusing read_escape(), so exactly one function
+ * knows what a backslash means and the assembler only ever sees bytes. Before
+ * this, an unsupported literal was skipped and reported (BUG-013); that
+ * rejection is gone now that strings are supported. */
+static Token lex_string_literal(Lexer *lexer)
+{
+    int start_line = lexer->line;
+    int start_col = lexer->col;
+    advance(lexer); /* opening '"' */
+
+    size_t cap = 32;
+    size_t len = 0;
+    char *buf = xmalloc(cap);
+
+    int closed = 0;
+    while (!at_end(lexer) && peek(lexer) != '\n')
+    {
+        int ch;
+        if (peek(lexer) == '"')
+        {
+            advance(lexer);
+            closed = 1;
+            break;
+        }
+        if (peek(lexer) == '\\')
+        {
+            advance(lexer); /* the backslash itself */
+            ch = read_escape(lexer);
+        }
+        else
+        {
+            ch = (unsigned char)advance(lexer);
+        }
+        if (len + 1 >= cap)
+        {
+            cap *= 2;
+            buf = xrealloc(buf, cap);
+        }
+        buf[len++] = (char)ch;
+    }
+
+    if (!closed)
+    {
+        report_error(start_line, start_col, "unterminated string literal");
+    }
+
+    buf[len] = '\0';
+
+    /* Keep the byte count: the literal may legitimately contain NUL bytes,
+     * which strlen() could not report (BUG-023). */
+    Token token = make_token(TOKEN_STRING, buf, start_line, start_col);
+    token.length = (int)len;
+    return token;
+}
+
 Token lexer_next_token(Lexer *lexer)
 {
-    skip_trivia(lexer);
-    if (at_end(lexer))
+    /* A string literal produces no token: drop it and keep looking. Doing
+     * this in a loop (rather than by recursion) keeps deeply string-heavy
+     * files from growing the C stack. */
+    for (;;)
     {
-        return make_token(TOKEN_EOF, NULL, lexer->line, lexer->col);
+        skip_trivia(lexer);
+        if (at_end(lexer))
+        {
+            return make_token(TOKEN_EOF, NULL, lexer->line, lexer->col);
+        }
+        break;
     }
 
     int line = lexer->line;
@@ -327,6 +461,10 @@ Token lexer_next_token(Lexer *lexer)
     if (c == '\'')
     {
         return lex_char_literal(lexer);
+    }
+    if (c == '"')
+    {
+        return lex_string_literal(lexer);
     }
 
     advance(lexer);
@@ -502,6 +640,8 @@ const char *token_type_to_string(TokenType type)
         return "integer literal";
     case TOKEN_CHAR_LIT:
         return "character literal";
+    case TOKEN_STRING:
+        return "string literal";
     case TOKEN_IDENT:
         return "identifier";
     case TOKEN_KEYWORD_INT:
@@ -624,6 +764,8 @@ const char *token_type_to_string(TokenType type)
         return "']'";
     case TOKEN_KEYWORD_STRUCT:
         return "'struct'";
+    case TOKEN_KEYWORD_EXTERN:
+        return "'extern'";
     case TOKEN_DOT:
         return "'.'";
     case TOKEN_ARROW:

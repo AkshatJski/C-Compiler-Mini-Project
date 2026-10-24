@@ -19,6 +19,9 @@ learn.md
 decision.docs
 Flow.docs
 learn.docs
+# Bug ledger: datewise, commit-linked, local-only (see the global working
+# agreement). Un-ignore this line to publish it as a showcase artefact.
+report.md
 
 # Editor / OS cruft
 .vscode/

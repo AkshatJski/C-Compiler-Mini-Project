@@ -6,6 +6,9 @@ rem  Compiles example.c with mycc, assembles it into an .exe with
 rem  MinGW gcc, runs it, and shows the exit code.
 rem  Expected result: 197  (fact(5)=120 + sum of primes up to 20=77)
 rem
+rem  Then does the same for hello.c, whose output you can actually
+rem  read -- the payoff of the Phase 4 calling convention.
+rem
 rem  Requirements: mycc.exe (run build.bat first) and MinGW gcc.
 rem  Uses gcc from your PATH; auto-detects MSYS2 UCRT64 / w64devkit.
 rem  Or set CC to the full path of your gcc.
@@ -27,18 +30,31 @@ if not exist mycc.exe (
 
 if not exist build mkdir build
 
-echo [1/3] Compiling example.c to assembly...
+echo [1/5] Compiling example.c to assembly...
 mycc.exe --target=windows example.c -o build\example.s
 if errorlevel 1 exit /b 1
 
-echo [2/3] Assembling and linking...
+echo [2/5] Assembling and linking...
 %CC% -o build\example.exe build\example.s
 if errorlevel 1 exit /b 1
 
-echo [3/3] Running...
+echo [3/5] Running...
 build\example.exe
 set RESULT=%errorlevel%
 echo.
-echo The program returned: %RESULT%
-echo Expected:               197
+echo   The program returned: %RESULT%
+echo   Expected:             197
+echo.
+
+echo [4/5] Compiling hello.c (real output, Phase 4)...
+mycc.exe --target=windows hello.c -o build\hello.s
+if errorlevel 1 exit /b 1
+%CC% -o build\hello.exe build\hello.s
+if errorlevel 1 exit /b 1
+
+echo [5/5] Running it...
+echo --------------------------------------------
+build\hello.exe
+echo --------------------------------------------
+echo.
 exit /b 0

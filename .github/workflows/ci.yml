@@ -10,10 +10,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build
-        run: make
+      # The canonical toolchain, and the one place where the project's
+      # "warning-free build" rule is enforced mechanically.
+      - name: Build (warnings are errors)
+        run: make CFLAGS="-std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -g -Iinclude"
       - name: Test
         run: make test
+      - name: Differential test (mycc vs gcc)
+        run: make difftest
 
   windows:
     name: Windows (MSYS2 / UCRT64)
@@ -33,3 +37,22 @@ jobs:
       - name: Test
         shell: msys2 {0}
         run: make test
+      - name: Differential test (mycc vs gcc)
+        shell: msys2 {0}
+        run: make difftest
+
+  # Exists to keep BUG-018 honest: the harness used to pass -no-pie (rejected by
+  # Apple's linker) and the compiler emitted ELF symbol names, so a macOS build
+  # could not link. The Makefile now drops the flag on Darwin and asks for
+  # --target=darwin, which prefix-qualifies every external symbol with '_'.
+  macos:
+    name: macOS (Apple clang)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Test
+        run: make test
+      - name: Differential test (mycc vs clang)
+        run: make difftest

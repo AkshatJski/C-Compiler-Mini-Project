@@ -6,6 +6,7 @@ typedef enum
     TOKEN_EOF,
     TOKEN_INT_LIT,
     TOKEN_CHAR_LIT,
+    TOKEN_STRING,
     TOKEN_IDENT,
     TOKEN_KEYWORD_INT,
     TOKEN_KEYWORD_CHAR,
@@ -24,6 +25,7 @@ typedef enum
     TOKEN_KEYWORD_CONTINUE,
     TOKEN_KEYWORD_RETURN,
     TOKEN_KEYWORD_STRUCT,
+    TOKEN_KEYWORD_EXTERN,
     TOKEN_PLUS,
     TOKEN_MINUS,
     TOKEN_STAR,
@@ -77,6 +79,11 @@ typedef struct
     char *value; /* owned; NULL for punctuation; freed on token advance */
     int line;
     int col;
+    /* Length of `value` in bytes, for tokens that may contain NUL bytes.
+     * A string literal is the only such token: `"\0A"` has three bytes and
+     * strlen() would stop at the first one, silently truncating the literal
+     * (BUG-023). Every other token leaves this 0 and code uses strlen. */
+    int length;
 } Token;
 
 #endif /* TOKENS_H */

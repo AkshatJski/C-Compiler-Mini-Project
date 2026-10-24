@@ -5,7 +5,97 @@
 #include "util.h"
 
 static int g_error_count = 0;
+static int g_warning_count = 0;
+static int g_warnings_enabled = 1;
 static const char *g_source_path = NULL;
+
+/* Phase 6: the source text itself, so a diagnostic can quote the offending
+ * line and point at the column instead of asking the reader to count. Set by
+ * main() after the file is read; the buffer outlives every diagnostic. */
+static const char *g_source_text = NULL;
+
+/* Phase 5: on by default, cleared by --no-opt. */
+int g_optimize = 1;
+
+/* Phase 7: --sign stamps each program with a provenance string so the built
+ * binary can prove which compiler produced it (`strings prog.exe | grep mycc`).
+ * Off by default: a compiler should not put bytes in a program unless asked. */
+int g_sign = 0;
+
+void set_source_text(const char *text)
+{
+    g_source_text = text;
+}
+
+/* Prints
+ *       3 |     int x = ;
+ *         |             ^
+ * under a diagnostic. Deliberately conservative:
+ *  - a line longer than the terminal is clipped, because a wrapped line makes
+ *    the caret point at the wrong thing;
+ *  - tabs are passed through on both rows so they stay aligned as long as the
+ *    reader's tab width is the same for both;
+ *  - a column past the end of the line puts the caret at the end rather than
+ *    past it;
+ *  - no source text (a synthesised node, line 0) prints nothing. */
+static void print_snippet(int line, int col)
+{
+    if (g_source_text == NULL || line <= 0)
+    {
+        return;
+    }
+
+    const char *p = g_source_text;
+    int current = 1;
+    while (current < line && *p != '\0')
+    {
+        if (*p == '\n')
+        {
+            current++;
+        }
+        p++;
+    }
+    if (current != line)
+    {
+        return; /* line number past the end of the file */
+    }
+
+    const char *end = p;
+    while (*end != '\0' && *end != '\n' && *end != '\r')
+    {
+        end++;
+    }
+    int len = (int)(end - p);
+    int shown = len > 78 ? 78 : len;
+
+    fprintf(stderr, "  %4d | %.*s\n", line, shown, p);
+    fprintf(stderr, "       | ");
+    int caret = col;
+    if (caret < 1)
+    {
+        caret = 1;
+    }
+    if (caret > shown)
+    {
+        caret = shown > 0 ? shown : 1;
+    }
+    for (int i = 1; i < caret; i++)
+    {
+        fputc(p[i - 1] == '\t' ? '\t' : ' ', stderr);
+    }
+    fprintf(stderr, "^\n");
+}
+
+ASTNode *ast_node(ASTNodeType type, int line, int col)
+{
+    ASTNode *node = xcalloc(1, sizeof(ASTNode));
+    node->type = type;
+    node->line = line;
+    node->col = col;
+    node->vtype = TYPE_INT;
+    node->val_type = type_int();
+    return node;
+}
 
 void set_source_path(const char *path)
 {
@@ -72,6 +162,7 @@ void report_error(int line, int col, const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
+    print_snippet(line, col);
     g_error_count++;
 }
 
@@ -83,6 +174,44 @@ int error_count(void)
 void error_reset(void)
 {
     g_error_count = 0;
+    g_warning_count = 0;
+}
+
+/* Same shape as report_error(), but advisory: the compilation still succeeds
+ * and the exit status is unaffected. Keeping the two counters apart is what
+ * lets `make test` assert on warnings without turning them into failures. */
+void report_warning(int line, int col, const char *fmt, ...)
+{
+    if (!g_warnings_enabled)
+    {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    if (g_source_path != NULL)
+    {
+        fprintf(stderr, "%s:", g_source_path);
+    }
+    if (line > 0 && col > 0)
+    {
+        fprintf(stderr, "%d:%d: ", line, col);
+    }
+    fprintf(stderr, "warning: ");
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    print_snippet(line, col);
+    g_warning_count++;
+}
+
+int warning_count(void)
+{
+    return g_warning_count;
+}
+
+void set_warnings_enabled(int enabled)
+{
+    g_warnings_enabled = enabled != 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -256,6 +385,79 @@ void struct_add_member(Type *struct_type, const char *name, Type *member_type)
     {
         struct_type->align = m_align;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Type names for diagnostics                                        */
+/* ------------------------------------------------------------------ */
+
+static void describe_append(char *buf, size_t size, size_t *used,
+                            const char *text)
+{
+    if (*used >= size)
+    {
+        return;
+    }
+    int n = snprintf(buf + *used, size - *used, "%s", text);
+    if (n > 0)
+    {
+        *used += (size_t)n;
+        if (*used >= size)
+        {
+            *used = size - 1; /* truncated; keep the buffer terminated */
+        }
+    }
+}
+
+static void describe_rec(const Type *t, char *buf, size_t size, size_t *used)
+{
+    if (t == NULL)
+    {
+        describe_append(buf, size, used, "<unknown>");
+        return;
+    }
+    switch (t->kind)
+    {
+    case TYPE_INT:
+        describe_append(buf, size, used, t->is_unsigned ? "unsigned int" : "int");
+        break;
+    case TYPE_CHAR:
+        describe_append(buf, size, used,
+                        t->is_unsigned ? "unsigned char" : "char");
+        break;
+    case TYPE_VOID:
+        describe_append(buf, size, used, "void");
+        break;
+    case TYPE_STRUCT:
+        describe_append(buf, size, used, "struct ");
+        describe_append(buf, size, used,
+                        t->struct_tag != NULL ? t->struct_tag : "<anonymous>");
+        break;
+    case TYPE_PTR:
+        describe_rec(t->base, buf, size, used);
+        describe_append(buf, size, used, " *");
+        break;
+    case TYPE_ARRAY:
+    {
+        char dims[32];
+        describe_rec(t->base, buf, size, used);
+        snprintf(dims, sizeof(dims), "[%d]", t->array_size);
+        describe_append(buf, size, used, dims);
+        break;
+    }
+    }
+}
+
+void type_describe(const Type *t, char *buf, size_t size)
+{
+    if (buf == NULL || size == 0)
+    {
+        return;
+    }
+    buf[0] = '\0';
+    size_t used = 0;
+    describe_rec(t, buf, size, &used);
+    buf[used < size ? used : size - 1] = '\0';
 }
 
 void collect_switch_cases(ASTNode *body, ASTNode ***vec, int *n, int *cap)

@@ -25,11 +25,14 @@ typedef enum {
     AST_POSTFIX,
     AST_VAR_REF,
     AST_INT_LIT,
+    AST_STRING,
     AST_CALL,
     /* Phase 3 additions */
     AST_ADDR_OF,
     AST_DEREF,
-    AST_MEMBER_ACCESS
+    AST_MEMBER_ACCESS,
+    /* Phase 5 / bug-fix additions */
+    AST_CAST
 } ASTNodeType;
 
 typedef enum {
@@ -50,7 +53,10 @@ typedef enum {
     OP_LT,
     OP_LE,
     OP_GT,
-    OP_GE
+    OP_GE,
+    /* The comma operator: evaluate the left operand for its side effects,
+     * then yield the right operand's value (BUG-007). */
+    OP_COMMA
 } BinaryOp;
 
 typedef enum {
@@ -91,11 +97,20 @@ typedef struct ASTNode {
     TypeKind vtype;
     Type *val_type;
     char *name;
+    /* AST_STRING only: the literal's byte count, because the decoded text may
+     * contain NUL bytes and strlen() would truncate it (BUG-023). */
+    int str_len;
     long long value;
     int line;
     int col;
     int stack_offset;
     int is_global;
+    /* AST_FUNC_DECL only: declared `extern`, i.e. provided by a library the
+     * linker supplies (printf, putchar, ...). Such a declaration is legal
+     * without a body and is exempt from the declared-but-never-defined check
+     * (BUG-015). Its calls also skip exact arity checking, because a variadic
+     * extern (`printf`) legitimately takes more arguments than it declares. */
+    int is_extern;
     int frame_size;
     int case_index;
     struct ASTNode *left;
@@ -105,5 +120,10 @@ typedef struct ASTNode {
     struct ASTNode *args;
     struct ASTNode *next;
 } ASTNode;
+
+/* Allocate a zeroed node of the given kind with sensible defaults (TYPE_INT).
+ * Shared by the parser and by semantic analysis, which synthesises the
+ * built-in I/O declarations (ROADMAP Phase 4). */
+ASTNode *ast_node(ASTNodeType type, int line, int col);
 
 #endif /* AST_H */

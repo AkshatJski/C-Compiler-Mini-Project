@@ -12,7 +12,8 @@
 static void usage(void)
 {
     fprintf(stderr,
-            "Usage: mycc <source.c> [-o <output.s>] [--target=linux|windows]\n");
+            "Usage: mycc <source.c> [-o <output.s>] "
+            "[--target=linux|windows|darwin] [--no-opt] [--sign] [-w]\n");
     fprintf(stderr,
             "  Compiles a C-subset program to AMD64 AT&T assembly.\n");
     fprintf(stderr,
@@ -23,6 +24,17 @@ static void usage(void)
             "  --dump-tokens  print the token stream, then stop\n");
     fprintf(stderr,
             "  --dump-ast     print the syntax tree (after checks), then stop\n");
+    fprintf(stderr,
+            "  --no-opt       disable constant folding and constant-condition\n");
+    fprintf(stderr,
+            "                 elimination (the pre-optimizer code generator)\n");
+    fprintf(stderr,
+            "  --sign         embed a provenance string in the program's data\n");
+    fprintf(stderr,
+            "  --version      print the compiler version and exit\n");
+    fprintf(stderr,
+            "  -w             suppress warnings (they never affect the exit "
+            "status)\n");
 }
 
 static char *read_file(const char *path)
@@ -57,12 +69,18 @@ int main(int argc, char **argv)
 {
     const char *source_path = NULL;
     const char *output_path = NULL;
-    int windows_target = 0;
+    /* The host's native object format is the sensible default; --target
+     * overrides it for cross-compiling the assembly text. */
+#if defined(_WIN32)
+    TargetKind target_kind = TARGET_WINDOWS;
+#elif defined(__APPLE__)
+    TargetKind target_kind = TARGET_DARWIN;
+#else
+    TargetKind target_kind = TARGET_LINUX;
+#endif
     int dump_tokens_flag = 0;
     int dump_ast_flag = 0;
-#ifdef _WIN32
-    windows_target = 1;
-#endif
+    int version_flag = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0) {
@@ -76,15 +94,34 @@ int main(int argc, char **argv)
             dump_tokens_flag = 1;
         } else if (strcmp(argv[i], "--dump-ast") == 0) {
             dump_ast_flag = 1;
+        } else if (strcmp(argv[i], "-w") == 0) {
+            /* Warnings are advisory; this only silences the channel, it never
+             * changes the exit status. */
+            set_warnings_enabled(0);
+        } else if (strcmp(argv[i], "--no-opt") == 0) {
+            /* Phase 5: emit exactly what the pre-optimizer compiler emitted.
+             * Used to compare the two back ends instruction for instruction,
+             * and to bisect an optimizer bug against a known-good path. */
+            g_optimize = 0;
+        } else if (strcmp(argv[i], "--sign") == 0) {
+            /* Phase 7: put a provenance string in the program's .rodata so
+             * `strings prog.exe` can prove which compiler built it. */
+            g_sign = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            version_flag = 1;
         } else if (strncmp(argv[i], "--target=", 9) == 0) {
-            const char *target = argv[i] + 9;
-            if (strcmp(target, "linux") == 0) {
-                windows_target = 0;
-            } else if (strcmp(target, "windows") == 0) {
-                windows_target = 1;
+            const char *target_name = argv[i] + 9;
+            if (strcmp(target_name, "linux") == 0) {
+                target_kind = TARGET_LINUX;
+            } else if (strcmp(target_name, "windows") == 0) {
+                target_kind = TARGET_WINDOWS;
+            } else if (strcmp(target_name, "darwin") == 0) {
+                target_kind = TARGET_DARWIN;
             } else {
-                fprintf(stderr, "error: unknown target '%s' (use linux or windows)\n",
-                        target);
+                fprintf(stderr,
+                        "error: unknown target '%s' "
+                        "(use linux, windows or darwin)\n",
+                        target_name);
                 usage();
                 return 1;
             }
@@ -101,6 +138,19 @@ int main(int argc, char **argv)
         }
     }
 
+    if (version_flag) {
+        /* Phase 7: one line that answers "what am I, and what can I target?"
+         * without compiling anything. Kept deliberately grep-able. */
+        printf("mycc 0.6 - C-subset compiler for AMD64 AT&T assembly\n");
+        printf("targets: linux, windows, darwin (default: %s)\n",
+               target_kind == TARGET_WINDOWS ? "windows"
+               : target_kind == TARGET_DARWIN ? "darwin"
+                                              : "linux");
+        printf("optimizer: %s (--no-opt to disable); --sign stamps programs\n",
+               g_optimize ? "on" : "off");
+        return 0;
+    }
+
     if (source_path == NULL) {
         usage();
         return 1;
@@ -113,6 +163,8 @@ int main(int argc, char **argv)
     if (source == NULL) {
         return 1;
     }
+    /* Phase 6: from here on a diagnostic can quote the offending line. */
+    set_source_text(source);
 
     Lexer lexer;
     lexer_init(&lexer, source);
@@ -143,31 +195,59 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Write to a temporary file and rename it into place only after the whole
+     * translation unit has been generated. A failure part-way through then
+     * leaves no .s behind, and an existing .s from a previous build is not
+     * truncated by a compile that fails (BUG-017). */
     FILE *out = stdout;
+    char *tmp_path = NULL;
     int close_out = 0;
     if (output_path != NULL) {
-        out = fopen(output_path, "w");
+        size_t n = strlen(output_path) + sizeof(".mycc-tmp");
+        tmp_path = xmalloc(n);
+        snprintf(tmp_path, n, "%s.mycc-tmp", output_path);
+        out = fopen(tmp_path, "w");
         if (out == NULL) {
-            fprintf(stderr, "error: cannot open output file '%s'\n", output_path);
+            fprintf(stderr, "error: cannot open output file '%s'\n", tmp_path);
+            free(tmp_path);
             free(source);
             return 1;
         }
         close_out = 1;
     }
 
-    if (codegen_generate(ast, out, windows_target) != 0) {
+    if (codegen_generate(ast, out, target_kind) != 0) {
         fprintf(stderr, "%s: compilation aborted during code generation\n",
                 source_path);
         if (close_out) {
             fclose(out);
+            remove(tmp_path);
         }
+        free(tmp_path);
         free(source);
         return 1;
     }
 
     if (close_out) {
-        fclose(out);
+        int failed = (fflush(out) != 0); /* catch a full disk */
+        if (fclose(out) != 0) {
+            failed = 1;
+        }
+        if (!failed && rename(tmp_path, output_path) != 0) {
+            /* Windows refuses to replace an existing file with rename(). */
+            remove(output_path);
+            failed = (rename(tmp_path, output_path) != 0);
+        }
+        if (failed) {
+            fprintf(stderr, "error: cannot write output file '%s'\n",
+                    output_path);
+            remove(tmp_path);
+            free(tmp_path);
+            free(source);
+            return 1;
+        }
     }
+    free(tmp_path);
     free(source);
     return 0;
 }
