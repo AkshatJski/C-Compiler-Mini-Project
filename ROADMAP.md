@@ -6,10 +6,16 @@ the full test suite (`make test` / `test.bat`) passing. Legend:
 - **[ ]** not started · **[~]** in progress · **[x]** done
 
 > **Status:** Phases 0, 1 (except the `int` width decision and multi-error
-> recovery), 2, 3, 4 and 6 are complete; Phase 5 is in progress. The suite now
-> has 32 positive tests and 41 error/diagnostic tests (75 checks), and every
-> job also runs a differential test that requires mycc and gcc to return the
-> same exit code (`make difftest` / `difftest.bat`).
+> recovery), 2, 3 and 4 are complete. Phase 5 is in progress (folding,
+> dead-branch elimination and constant operands have landed; dataflow copy
+> propagation and the register allocator have not). Phase 6 is partly done
+> (caret diagnostics, the warning channel, the differential harness and the
+> opt/no-opt equivalence check are in; `--interpret` and the random program
+> generator are not). Phase 7 has `--version`, `--sign` and three-target output;
+> floating point and an SSA IR are open. The suite now has 33 positive tests, 41
+> error/diagnostic tests and 3 contract checks (77 checks), and every job also
+> runs a differential test that requires mycc and gcc to return the same exit
+> code (`make difftest` / `difftest.bat`).
 >
 > **Correctness sweep (2026-10-23):** a full source review plus ~30 adversarial
 > probes against gcc turned up 21 defects, all of which are now fixed or (one)
