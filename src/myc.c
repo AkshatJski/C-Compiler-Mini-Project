@@ -286,8 +286,26 @@ static ASTNode *parse_primary(void)
 {
     if (check(TOKEN_INT_LIT))
     {
-        ASTNode *n = make_int(strtoll(p.current.value, NULL, 10),
-                              p.current.line, p.current.col);
+        /* Same hand-off as the C front end, on purpose: the token already
+         * carries C's literal text, so `0x10` must mean 16 here too. Parsing it
+         * as base-10 quietly turned every hex literal into 0 (BUG-029). */
+        long long value = 0;
+        int line = p.current.line;
+        int col = p.current.col;
+        switch (parse_integer_literal(p.current.value, &value))
+        {
+        case INT_LITERAL_OK:
+            break;
+        case INT_LITERAL_RANGE:
+            report_error(line, col, "integer literal '%s' out of range",
+                         p.current.value);
+            return NULL;
+        default:
+            report_error(line, col, "invalid integer literal '%s'",
+                         p.current.value);
+            return NULL;
+        }
+        ASTNode *n = make_int(value, line, col);
         advance();
         return n;
     }

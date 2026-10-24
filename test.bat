@@ -289,45 +289,78 @@ if not "!MYCRC!"=="30" (
     set FAILED=1
     goto :eof
 )
-rem BUG-027: `if`/`else` must parse, and the else branch must actually *run*.
-rem The pair above proves the two front ends agree; this proves an else branch is
-rem reachable - which no test could see while both files of the pair lacked one.
-mycc.exe --lang=myc "tests\myc\else.myc" -o "build\myc_else.s" >nul 2>&1
+rem BUG-027 / BUG-029: the pair above proves the two front ends agree on a
+rem program with no expectations. Each tests\myc\NAME.myc adds behaviour that
+rem is asserted - the else branch is actually taken, hex/octal literals mean
+rem what they mean in C - and each has a hand-written C twin NAME.c. Both
+rem halves matter: byte-identical assembly catches "the languages disagree",
+rem the exit code catches "both agree on the wrong answer".
+rem FAILED is *defined* from the start (set to 0), so "if not defined" would skip
+rem every pair. Compare the value with delayed expansion instead.
+for %%P in (else literals) do (
+    if "!FAILED!"=="0" call :myc_pair %%P
+)
+goto :eof
+
+rem Compile one tests\myc\NAME.myc and its C twin NAME.c, require identical
+rem assembly, link, run, and check the `EXPECT:` / `EXPECT-OUT:` markers in the
+rem .myc file. Shares the marker syntax with :positive on purpose.
+:myc_pair
+set "PBASE=%~1"
+set "PMYC=tests\myc\%PBASE%.myc"
+set "PC=tests\myc\%PBASE%.c"
+set "PEXPECT="
+for /f "tokens=1,* delims=:" %%a in ('findstr /c:"EXPECT:" "%PMYC%"') do (
+    if not defined PEXPECT set "PEXPECT=%%b"
+    goto :myc_pair_expect_done
+)
+:myc_pair_expect_done
+set "PEXPECT=%PEXPECT: =%"
+set "PWANT="
+for /f "tokens=1,* delims=:" %%a in ('findstr /c:"EXPECT-OUT:" "%PMYC%"') do (
+    if not defined PWANT set "PWANT=%%b"
+    goto :myc_pair_out_done
+)
+:myc_pair_out_done
+if defined PWANT set "PWANT=%PWANT:~1%"
+mycc.exe --lang=myc "%PMYC%" -o "build\myc_%PBASE%.s" >nul 2>&1
 if errorlevel 1 (
-    echo FAIL: myc rejected if/else
+    echo FAIL: myc rejected %PMYC%
     set FAILED=1
     goto :eof
 )
-mycc.exe "tests\myc\else.c" -o "build\c_else.s" >nul 2>&1
+mycc.exe "%PC%" -o "build\c_%PBASE%.s" >nul 2>&1
 if errorlevel 1 (
-    echo FAIL: the C twin of the if/else test was rejected
+    echo FAIL: the C twin %PC% was rejected
     set FAILED=1
     goto :eof
 )
-fc /b "build\myc_else.s" "build\c_else.s" >nul 2>&1
+fc /b "build\myc_%PBASE%.s" "build\c_%PBASE%.s" >nul 2>&1
 if errorlevel 1 (
-    echo FAIL: myc and the C twin disagree about if/else
+    echo FAIL: %PMYC% and its C twin emitted different assembly
     set FAILED=1
     goto :eof
 )
-%CC% -o "build\myc_else.exe" "build\myc_else.s" >nul 2>&1
+%CC% -o "build\myc_%PBASE%.exe" "build\myc_%PBASE%.s" >nul 2>&1
 if errorlevel 1 (
-    echo FAIL: the if/else assembly did not link
+    echo FAIL: the assembly for %PMYC% did not link
     set FAILED=1
     goto :eof
 )
-"build\myc_else.exe" > "build\myc_else.stdout" 2>&1
-set "ELSERC=!errorlevel!"
-if not "!ELSERC!"=="8" (
-    echo FAIL: the if/else program returned !ELSERC! instead of 8
+"build\myc_%PBASE%.exe" > "build\myc_%PBASE%.stdout" 2>&1
+set "PRC=!errorlevel!"
+if not "!PRC!"=="%PEXPECT%" (
+    echo FAIL: %PMYC% returned !PRC! instead of %PEXPECT%
     set FAILED=1
     goto :eof
 )
-findstr /c:"else-branch" "build\myc_else.stdout" >nul 2>&1
-if errorlevel 1 (
-    echo FAIL: the if/else program did not take the else branch
-    set FAILED=1
-    goto :eof
+if defined PWANT (
+    findstr /c:"%PWANT%" "build\myc_%PBASE%.stdout" >nul 2>&1
+    if errorlevel 1 (
+        echo FAIL: %PMYC% did not print "%PWANT%"
+        set FAILED=1
+        goto :eof
+    )
 )
-echo PASS: --lang=myc matches the C twin (if/else included) and runs
+echo PASS: --lang=myc matches its C twin: tests\myc\%PBASE%
 goto :eof
