@@ -28,6 +28,10 @@ learn.docs
 # agreement). Un-ignore this line to publish it as a showcase artefact.
 report.md
 
+# Project report working copy (college submission material, built from this
+# repository's own evidence - not part of the repository's public surface).
+REPORT-DRAFT.md
+
 # Editor / OS cruft
 .vscode/
 .idea/
