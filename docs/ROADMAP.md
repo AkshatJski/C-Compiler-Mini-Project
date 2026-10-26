@@ -181,6 +181,19 @@ diagnostics; all green.
 `tests/23_lvalue_single_eval.c`; a real `main` that reads/writes an array and
 sums it via pointers. This phase proves the compiler can host real algorithms.
 
+**Post-Phase-3 conformance gaps (2026-10-26):** the checklist above is complete,
+but the memory/type audit found these remaining gaps, which are recorded in the
+bug ledger rather than hidden behind “Phase 3 complete”:
+
+- array parameter declarators (`int f(int a[])`) are rejected; callers must write
+  `int *a`;
+- pointer-to-array declarations (`int (*p)[2]`) are rejected even though `&array`
+  now has that type internally;
+- block-scope `struct` tag shadowing is not modelled;
+- array members inside structs (`struct S { int a[4]; };`) are rejected;
+- **BUG-048 (OPEN):** `if (struct_value)` and struct comparisons are accepted
+  without the required scalar-type diagnostic.
+
 ---
 
 ## Phase 4 - I/O & runtime
@@ -228,8 +241,9 @@ behaviour.
       `movq $k`) - **folds in semantic analysis**, after the node's type is
       known, rewriting the node *in place* so parents see the folded form
       without re-parenting. `--dump-ast` shows `14`, not `(2 + 3 * 4)`.
-      Conservative by design: only integer results, never unsigned operands,
-      never a division by zero, never the comma operator
+      Conservative by design: only integer results, no division by zero and no
+      comma operator; it does fold unsigned results and integer casts after the
+      node has been type-checked (BUG-037/046)
 - [x] Dead code / constant-condition elimination (`if (0) ...`) - **in
       codegen**, not semantic: only the live arm of `if`/`? :` is emitted,
       `while (0)` emits nothing, `for (init; 0; step)` emits only the init,

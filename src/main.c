@@ -2,6 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#endif
+
 #include "codegen.h"
 #include "dump.h"
 #include "lexer.h"
@@ -71,8 +77,46 @@ static char *read_file(const char *path)
         free(buf);
         return NULL;
     }
+    /* The lexer treats NUL as end-of-input. A NUL embedded in the file would
+     * therefore silently truncate the translation unit, so reject it here
+     * instead of compiling a prefix of the program. */
+    if (memchr(buf, '\0', n) != NULL) {
+        fprintf(stderr, "error: source file '%s' contains a NUL byte\n", path);
+        free(buf);
+        return NULL;
+    }
     buf[n] = '\0';
     return buf;
+}
+
+/* Do two path spellings name the same existing file? An exact string compare
+ * misses `foo.c` vs `./foo.c`, a case-insensitive Windows spelling, a hard
+ * link, or a symlink. POSIX compares file identity, which catches all of those;
+ * Windows canonicalizes the two paths and compares case-insensitively, which
+ * covers the ordinary aliases. Missing paths simply are not the same file. */
+static int same_file(const char *a, const char *b)
+{
+#if defined(_WIN32)
+    /* _fullpath resolves relative components without requiring the file to
+     * exist (the output may be new). Windows paths are case-insensitive, so
+     * compare them that way. This does not resolve every possible alias
+     * (short names or hard links), but it closes the ordinary destructive
+     * `foo.c` vs `.\foo.c` / `FOO.C` spellings. */
+    char *fa = _fullpath(NULL, a, 0);
+    char *fb = _fullpath(NULL, b, 0);
+    int same = fa != NULL && fb != NULL && _stricmp(fa, fb) == 0;
+    free(fa);
+    free(fb);
+    return same;
+#else
+    struct stat sa;
+    struct stat sb;
+    if (stat(a, &sa) != 0 || stat(b, &sb) != 0)
+    {
+        return 0;
+    }
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
 }
 
 int main(int argc, char **argv)
@@ -181,6 +225,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* Refuse the destructive invocation `mycc foo.c -o foo.c`: the
+     * temporary-file rename would replace the source with assembly. The
+     * string compare covers the common typo; same_file() also catches
+     * alternate spellings, POSIX links and Windows case folding. */
+    if (output_path != NULL &&
+        (strcmp(source_path, output_path) == 0 ||
+         same_file(source_path, output_path))) {
+        fprintf(stderr,
+                "error: input and output are the same file '%s'\n",
+                source_path);
+        return 1;
+    }
+
     error_reset();
     set_source_path(source_path);
 
@@ -239,6 +296,18 @@ int main(int argc, char **argv)
         size_t n = strlen(output_path) + sizeof(".mycc-tmp");
         tmp_path = xmalloc(n);
         snprintf(tmp_path, n, "%s.mycc-tmp", output_path);
+        /* The source may itself be named like the temporary file (for example
+         * `mycc foo.mycc-tmp -o foo.s`). Opening the temp path with "w" would
+         * truncate the source we just read, so reject the collision before
+         * touching the filesystem. */
+        if (same_file(source_path, tmp_path)) {
+            fprintf(stderr,
+                    "error: input and temporary output are the same file '%s'\n",
+                    source_path);
+            free(tmp_path);
+            free(source);
+            return 1;
+        }
         out = fopen(tmp_path, "w");
         if (out == NULL) {
             fprintf(stderr, "error: cannot open output file '%s'\n", tmp_path);

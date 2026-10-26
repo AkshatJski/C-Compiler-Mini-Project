@@ -13,7 +13,7 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
 ## What's inside
 
 - Hand-written lexer, recursive-descent parser, scoped symbol table,
-  semantic analysis, an AST optimizer, and a code generator (~8,800 lines of C99 across `src/`
+  semantic analysis, an AST optimizer, and a code generator (~9,500 lines of C99 across `src/`
   and `include/`).
 - **Types:** `int` (64-bit), `char` (signed, one byte), their `unsigned`
   counterparts (`unsigned int`, `unsigned char`, and bare `unsigned`), plus
@@ -35,7 +35,10 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   (one byte), plus `signed` as the explicit default. `unsigned` values use
   `divq` instead of `idivq`, `shrq` instead of `sarq`, and the unsigned
   `setb`/`setbe`/`seta`/`setae` comparisons; `unsigned char` is loaded with
-  `movzbq` (zero extension) rather than `movsbq`. Narrow `unsigned char`
+  `movzbq` (zero extension) rather than `movsbq`. Arithmetic, comparisons,
+  `?:`, and shifts follow C's usual arithmetic conversions (a shift result
+  takes the promoted left operand's type, not the right operand's), and
+  constant folding uses the same signedness rules. Narrow `unsigned char`
   arithmetic still promotes to a signed 64-bit value, which is exactly C's
   integer-promotion rule, and pointers compare as unsigned addresses.
 - **Statements:** `if`/`else`, `while`, `do`/`while`, `for` (loop-local
@@ -62,15 +65,18 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   constant-folded initializers, multi-declarator declarations, and block
   scoping. `main` must be declared `int main(void)`; a program without
   `main`, or with an undefined function still being called, is rejected
-  during compilation instead of failing at link time.
+  during compilation instead of failing at link time. `main` must return
+  non-`unsigned` `int`; a prototype without a body or `void main` is rejected.
 - **Literals:** decimal, hexadecimal (`0x…`), and octal (`0…`) integers with
   optional `u`/`l` suffixes; character constants (`'A'`, `'\n'`, `'\x41'`);
   and string literals with the full C escape set (`\n \t \r \0 \a \b \f \v \\
-  \' \" \xHH \ooo`). A literal string is emitted once into `.rodata` and shared
-  by every use. Malformed literals are errors rather than silent zeroes: `08`
-  and `09`, `0x` with no digits, and an unterminated character constant or
-  string literal are all reported. A UTF-8 byte-order mark (which Windows
-  editors add) is skipped.
+  \' \" \? \xHH \ooo`). Adjacent string literals are concatenated after escape
+  processing (so `"\0" "A"` keeps its leading NUL). A literal string is emitted
+  once into `.rodata` and shared by every use. Malformed literals are errors
+  rather than silent zeroes: `08` and `09`, `0x` with no digits, an
+  out-of-range escape, and an unterminated character constant or string
+  literal are all reported. A UTF-8 byte-order mark (which Windows editors
+  add) is skipped.
 - **Output and library calls:** programs can print. Four built-ins need no
   declaration and no `#include` — `print_int(x)` (decimal + newline),
   `print_char(c)`, `print_str(s)` and `print_endl()`. String literals
@@ -86,9 +92,11 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   checks, unknown struct members, scope/`main`/`break`/`continue`/`switch`
   validation, rejection of non-constant global initializers, assignment to an
   array, dereferencing a `void *`, incomplete/zero-sized objects, struct
-  redefinition, and precise messages (one error, not a cascade) for
-  constructs the subset does not have — `#include` and other preprocessor
-  directives.
+  redefinition, an `extern` variable (definitions must be in this file),
+  a nonzero integer initializing a global pointer, and precise messages (one
+  error, not a cascade) for constructs the subset does not have — `#include`
+  and other preprocessor directives, struct-valued `?:`, and struct by-value
+  parameters/returns.
 - **Warnings:** advisory diagnostics that never change the exit status
   (`<file>:<line>:<col>: warning: …`), e.g. `control reaches end of non-void
   function 'f'`. `-w` silences the warning channel without affecting errors.
@@ -116,10 +124,13 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   embeds a provenance string in the program's data, so `strings prog.exe` shows
   which compiler built it (off by default).
 - A failed compilation leaves **no** output file behind (the assembly is
-  written to a temporary file and renamed on success).
-- **Tests:** 35 positive programs (`tests/01-36`) and 41 rejection tests
-  (`tests/errors/`), plus 5 contract assertions — 81 checks in total — covering
-  pointers (`12`), arrays
+  written to a temporary file and renamed on success). The output path and
+  that temporary path are checked against the input, so `mycc foo.c -o
+  .\\foo.c` (or a source named like the temporary file) is rejected instead of
+  overwriting the source.
+- **Tests:** 48 positive programs (`tests/01-33`, `tests/35-49`) and 52
+  rejection tests (`tests/errors/`), plus 6 contract assertions — 106 checks
+  in total — covering pointers (`12`), arrays
   (`13`), structs (`14`), nested `switch` labels (`15`), member `++`/`--`
   (`16`), multi-dimensional arrays (`17`), `unsigned` types (`18`), the comma
   operator (`19`), casts (`20`), global pointers (`21`), struct assignment
@@ -127,8 +138,12 @@ source.c ──> mycc ──> source.s ──> gcc ──> executable ──> ou
   fall-off-the-end warning (`25`), hello world (`26`), the print built-ins
   (`27`), `extern printf` (`28`), string escapes (`29`), NUL bytes inside
   a literal (`30`), constant folding (`31`), constant-condition
-  elimination (`32`), constant operands (`33`), dead local stores (`35`) and
-  temporaries in registers (`36`). Positive tests assert the program's real
+  elimination (`32`), constant operands (`33`), dead local stores (`35`),
+  temporaries in registers (`36`), wide calls (`37`), unnamed prototype
+  parameters (`38`), `&array` (`39`), character constants (`40`), `void`
+  expressions (`41`), assignment/ternary/`case` conversions (`42`-`46`),
+  `\?` (`47`), unsigned arithmetic types (`48`) and adjacent strings (`49`).
+  Positive tests assert the program's real
   **output** (`// EXPECT-OUT:`), not just its exit code, and each of them is
   also built with `--no-opt` and required to print the same bytes, so the
   optimizer is checked for changing behaviour on every test.
@@ -291,12 +306,17 @@ CALL printf  [3:5]
 ```
 cd "C:\Folder D\Feature_anant\C-Compiler-Mini-Project"
 .\build.bat        # builds mycc.exe
-.\test.bat         # runs the positive + error test suites (81 checks)
+.\test.bat         # runs the positive + error test suites (106 checks)
 .\difftest.bat     # compiles tests\diff\*.c with mycc and with gcc, compares
 .\fuzz.bat         # generates 1000 random programs and compares mycc vs gcc
 .\showcase.bat     # end-to-end demo, returns 197
 .\demo.bat         # five-minute demo for a non-technical audience
 ```
+
+If `gcc` on `PATH` is a 32-bit MinGW.org toolchain, set the 64-bit compiler
+explicitly before the differential/fuzz scripts:
+`$env:CC='C:\w64devkit\bin\gcc.exe'` (or put `C:\w64devkit\bin` first on
+`PATH`).
 
 ## Quick start (Linux / macOS)
 
@@ -370,7 +390,7 @@ of the documentation lives in **`docs/`**:
 | File | What it is |
 |---|---|
 | `docs/REPORT-DRAFT.md` | the full project report: objectives, module-by-module implementation, grammar, a worked C → assembly example, the optimization measurements, the testing methodology, the defect analysis and 25 viva questions |
-| `docs/report.md` | the bug ledger: 31 defects, each with a reproduction, a root cause, a fix commit and the regression test that fails on the old code |
+| `docs/report.md` | the bug ledger: 48 defects with reproductions and root causes; 47 fixed (16 in the working tree, commit `pending`) and 1 open (`BUG-048`), each with its regression test or stated evidence limit |
 | `docs/Flow.md` | the execution flow map: which function calls which, from `main()` to the emitted assembly |
 | `docs/ROADMAP.md` | the phase plan, what landed in each phase, and the future work |
 | `docs/DEMO.md` | the demo playbook: every feature, the command that shows it, and what to say |

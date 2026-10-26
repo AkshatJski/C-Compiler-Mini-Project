@@ -6,6 +6,8 @@ Published since 2026-10-24 in `docs/`, next to the bug ledger and the planning
 notes. Three working notes stay local: `decision.md`, `learn.md` and
 `instructions.md`.
 
+> **2026-10-26 audit addendum.** A later correctness pass added tests 37–49, the same-file/temp-path contract, and ledger entries `BUG-032`…`BUG-048`. The numbers in this draft have been refreshed where they describe the current repository: **48 defects logged, 47 fixed, 1 open**; **106 automated checks** (48 positive, 52 rejection, 6 contract); **9,502 compiler lines** (9,055 `src/` + 447 `include/`). Sixteen of the new fixes are present in the working tree but **not committed**, because the user withheld commit/push permission; their ledger status is `FIXED (working tree)` with a `pending` commit. `BUG-048` — struct values accepted as conditions/comparisons — remains **OPEN**. The current optimizer measurement is **30.9%** (14,290 → 9,872 lines over 48 tests); the historical 2026-10-24 35-test comparison (33.8%), the 81-check CI matrix and the 8,766-line snapshot are retained as history and labelled as such where they appear.
+
 ---
 
 ## 0. How to use this draft
@@ -32,9 +34,11 @@ submission, and they are worth foregrounding:
 
 1. **Every claim is executable.** The test suite, the differential harness, the
    fuzzer and CI all live in the repository; the report quotes their output.
-2. **The bug ledger is public inside the project.** 31 defects, each with a
-   reproduction, a root cause, a fix plan, a fix commit and a regression test —
-   including the ones that were *only* findable by reading CI logs.
+2. **The bug ledger is public inside the project.** 48 defects, each with a
+   reproduction, a root cause, a fix plan and, where fixed, a regression test —
+   including the ones that were *only* findable by reading CI logs. One of the
+   48 (`BUG-048`, scalar contexts for struct values) is still open and is listed
+   as open rather than rounded up to “fixed.”
 3. **The limitations are decisions, not oversights.** `int` is 64 bits because
    it was decided and written down, not because nobody noticed.
 
@@ -42,7 +46,7 @@ submission, and they are worth foregrounding:
 
 ## 1. Abstract
 
-`mycc` is a compiler for a subset of C, written from scratch in about 8,800
+`mycc` is a compiler for a subset of C, written from scratch in about 9,500
 lines of C99 with no parser generator, no LLVM and no external libraries. It
 lexes, parses, type-checks and optimizes a C subset — including pointers,
 multi-dimensional arrays, structs, `unsigned` types, the full expression
@@ -56,14 +60,15 @@ settings on every program in the suite. Second, the compiler has a second front
 end — a small language called `myc` — which lowers to the *same* AST, so the
 same program written in the two languages must compile to byte-identical
 assembly; that equivalence is checked on every test run. Third, the project
-keeps an honest public defect ledger: 31 bugs with reproductions, root causes,
-fails-before fixes and regression tests, all 31 closed, including two that
-proved the project's own CI had never actually been green.
+keeps an honest public defect ledger: 48 bugs with reproductions, root causes,
+fails-before fixes and regression tests, 47 closed and one open, including two
+that proved the project's own CI had never actually been green.
 
-The result is a compiler of about 8,800 lines whose behaviour is pinned by 81
-assertions, 3 differential programs, a deterministic fuzzer and a three-platform
-CI matrix (first green run: 2026-10-24), producing assembly 33.8% smaller than
-its unoptimized path over the test suite.
+The result is a compiler of about 9,500 lines whose behaviour is pinned by 106
+automated checks, 3 differential programs, a deterministic fuzzer and a
+three-platform CI matrix (first green run: 2026-10-24). The current 48-test
+suite produces assembly **30.9% smaller** than the unoptimized path (14,290 →
+9,872 lines); the earlier 35-test snapshot measured 33.8%.
 
 ---
 
@@ -85,12 +90,12 @@ rather than a claim.
 
 | # | Objective | Evidence |
 |---|---|---|
-| O1 | Hand-written lexer, recursive-descent parser, symbol table, semantic analysis, optimizer, code generator | §7, 8,766 lines in `src/` + `include/` |
-| O2 | Compile a useful C subset, including pointers, arrays, structs, `unsigned` | §7, 35 positive tests |
+| O1 | Hand-written lexer, recursive-descent parser, symbol table, semantic analysis, optimizer, code generator | §7, 9,502 lines in `src/` + `include/` |
+| O2 | Compile a useful C subset, including pointers, arrays, structs, `unsigned` | §7, 48 positive tests |
 | O3 | Emit real x86-64 assembly that links against the platform C library | §7.6, `tests/26`–`29`, three targets |
 | O4 | Real calling conventions (SysV and Win64), not a private ABI | §7.6, `tests/diff/02_stack_args.c` |
-| O5 | Optimize, and prove the optimizer does not change behaviour | §7.5, `--no-opt` parity on all 35 tests, 33.8% size reduction |
-| O6 | Diagnostics a human can act on (carets, one error not a cascade) | §7.7, 41 rejection tests |
+| O5 | Optimize, and prove the optimizer does not change behaviour | §7.5, `--no-opt` parity on every positive test; 30.9% size reduction over the current 48-test suite |
+| O6 | Diagnostics a human can act on (carets, one error not a cascade) | §7.7, 52 rejection tests |
 | O7 | Test with an independent oracle, not just self-consistency | §10, differential + fuzz |
 | O8 | Work on three platforms, verified by CI | §10.5, run `40086581248` |
 
@@ -155,16 +160,16 @@ source.c ──lexer──> tokens ──parser──> AST ──semantic+optimi
 
 | Stage | Input | Output | Where |
 |---|---|---|---|
-| Lexer | characters | tokens with line/column | `src/lexer.c` (741 lines) |
-| Parser | tokens | AST (arena-allocated nodes) | `src/parser.c` (1,900) |
+| Lexer | characters | tokens with line/column | `src/lexer.c` (781 lines) |
+| Parser | tokens | AST (arena-allocated nodes) | `src/parser.c` (2,027) |
 | Symbol table | declarations | scoped symbol records | `src/symtab.c` (101) |
-| Semantic analysis | AST | typed AST, folded constants, builtin rewrites, errors/warnings | `src/semantic.c` (1,474) |
-| Optimizer | typed AST | smaller AST (dead stores) | `src/opt.c` (405) |
-| Code generator | typed AST | x86-64 AT&T assembly | `src/codegen.c` (1,729) |
-| Diagnostics | positions | `file:line:col: error: …` + caret snippet | `src/util.c` (455) |
-| Driver | argv | the pipeline, flags, temp-file-and-rename | `src/main.c` (268) |
-| Inspectors | AST/tokens | `--dump-tokens`, `--dump-ast` | `src/dump.c` (350) |
-| Second front end | `myc` source | the *same* AST | `src/myc.c` (914) |
+| Semantic analysis | AST | typed AST, folded constants, builtin rewrites, errors/warnings | `src/semantic.c` (1,777) |
+| Optimizer | typed AST | smaller AST (dead stores) | `src/opt.c` (413) |
+| Code generator | typed AST | x86-64 AT&T assembly | `src/codegen.c` (1,853) |
+| Diagnostics | positions | `file:line:col: error: …` + caret snippet | `src/util.c` (485) |
+| Driver | argv | the pipeline, flags, temp-file-and-rename | `src/main.c` (334) |
+| Inspectors | AST/tokens | `--dump-tokens`, `--dump-ast` | `src/dump.c` (352) |
+| Second front end | `myc` source | the *same* AST | `src/myc.c` (932) |
 
 ---
 
@@ -224,7 +229,7 @@ report chapter needs.
 | D4 | **Two front ends, one back end** | A `myc`-to-C translator | Byte-identical assembly becomes a *proof* that the abstraction boundary is real; a translator would hide the seam | The toy language inherits C's literal *syntax* from the shared lexer, so it had to inherit the meaning too (BUG-029) |
 | D5 | **Differential testing against gcc**, not golden files | Compare emitted assembly to expected text | Golden `.s` files break on every refactor and assert *how*, not *what*; gcc asserts *what* and finds bugs nobody predicted (it found BUG-020) | The oracle is only as good as the test programs, so a fuzzer was added (§7.9) |
 | D6 | **`--no-opt` keeps the pre-optimizer path alive** | Delete the old codegen | Makes every optimizer bug bisectable against a known-good path, and turns "the optimizer preserves behaviour" into a check on every test | One flag and one global; the codegen has two modes to maintain |
-| D7 | **No configuration file, no plugin system** | A `mycc.toml`, pass plugins | A 8,800-line compiler does not need configuration; flags are enough, and a config file is surface area that can drift | No per-project settings; accepted |
+| D7 | **No configuration file, no plugin system** | A `mycc.toml`, pass plugins | A 9,500-line compiler does not need configuration; flags are enough, and a config file is surface area that can drift | No per-project settings; accepted |
 | D8 | **Publish the evidence, keep the notebook** | Publish everything from day one; publish nothing but the README | A stranger needs the README to stand alone, and the report plus the bug ledger *are* the evidence; the decision log, learning guide and long manual are working material that reads badly out of context | The public repo shows the code, the README, and everything in `docs/` except three working notes — the day-to-day reasoning is summarised in this report instead |
 | D9 | **Fail loudly rather than emit best-effort code** | Warn and continue | The ledger's P0 bugs were all silent wrong answers; a compiler that refuses is more useful than one that lies | Some valid C is rejected (struct by value, `sizeof`) |
 | D10 | **CI must be green, not "mostly green"** | Accept a red macOS job | A red job that nobody reads is worse than no job; it hid two real defects for days (BUG-030, BUG-031) | Time spent fixing infrastructure instead of features |
@@ -233,7 +238,7 @@ report chapter needs.
 
 ## 7. Implementation
 
-### 7.1 Lexer (`src/lexer.c`, 741 lines)
+### 7.1 Lexer (`src/lexer.c`, 781 lines)
 
 Hand-written character scanner with one character of lookahead. It produces
 `Token` records carrying kind, text, line and column, and it owns three pieces
@@ -250,7 +255,7 @@ of real work:
   editors add one and the first error a new user hit was a lexer error on an
   invisible character (BUG-011).
 
-### 7.2 Parser and AST (`src/parser.c`, 1,900 lines)
+### 7.2 Parser and AST (`src/parser.c`, 2,027 lines)
 
 Recursive descent, one function per precedence level, exactly mirroring the C
 grammar the subset implements. Two properties matter:
@@ -274,7 +279,7 @@ than a hash table (no hashing, better locality) and far easier to explain.
 ends — the first place where "two front ends, one back end" becomes visible in
 the code.
 
-### 7.4 Semantic analysis (`src/semantic.c`, 1,474 lines)
+### 7.4 Semantic analysis (`src/semantic.c`, 1,777 lines)
 
 One traversal that does five jobs:
 
@@ -293,7 +298,7 @@ One traversal that does five jobs:
 5. **Diagnostics** — one error per run by default, with a caret snippet; the
    warning channel (`-w` silences) is separate and never changes the exit code.
 
-### 7.5 Optimizer (`src/opt.c`, 405 lines + two codegen mechanisms)
+### 7.5 Optimizer (`src/opt.c`, 413 lines + two codegen mechanisms)
 
 Four pieces, each of which can be argued for in a paragraph — plus one size
 optimization:
@@ -311,20 +316,26 @@ stack back end it saves nothing, and the measurement is recorded in
 `decision.md`. A liveness-based global allocator was *not* attempted, because it
 needs an IR that does not exist yet — an honest "no" with a reason (§14).
 
-Measured effect over the 35 positive tests (this run, 2026-10-24):
+Measured effect over the current 48 positive tests (2026-10-26 audit):
 
-| Setting | Assembly lines across 35 tests | |
+| Setting | Assembly lines across 48 tests | |
 |---|---|---|
-| `--no-opt` | 11,055 | baseline |
-| optimized | 7,315 | **33.8% smaller** |
+| `--no-opt` | 14,290 | baseline |
+| optimized | 9,872 | **30.9% smaller** |
+
+The earlier 35-test snapshot was 11,055 → 7,315 (33.8%); the current figure is
+the one produced by the 48-test suite and should be re-run with the snippet in
+`DEMO.md` rather than recited.
 
 `example.c` (the recursion + primes demo): 263 → 239 lines.
 
-Crucially, **every one of the 35 programs is compiled both ways and must exit
+Crucially, **every positive program is compiled both ways and must exit
 identically with byte-identical stdout** — so the optimizer's correctness is
-checked on every run, not by inspection.
+checked on every run, not by inspection. The current suite has 48 positive
+programs; the 48-test row above is the current measurement, and the 35-test row
+is retained so the older snapshot is not mistaken for the current result.
 
-### 7.6 Code generation (`src/codegen.c`, 1,729 lines)
+### 7.6 Code generation (`src/codegen.c`, 1,853 lines)
 
 A stack machine over x86-64: every expression leaves its result in `%rax`, and
 values that must survive across another expression are pushed (or parked in
@@ -361,7 +372,7 @@ leading `_` on every external symbol on Darwin (`_main`, `_printf`), `@PLT` for
 ELF externals. `--target=linux|windows|darwin` overrides the host default;
 `--target=beos` is a clean error.
 
-### 7.7 Diagnostics (`src/util.c`, 455 lines)
+### 7.7 Diagnostics (`src/util.c`, 485 lines)
 
 Every error and warning is `file:line:col: severity: message` followed by the
 offending source line and a caret at the column:
@@ -377,7 +388,7 @@ reports and unwinds rather than inventing follow-on errors), and **no output
 file on failure** (assembly goes to a temporary file and is renamed only on
 success, BUG-017).
 
-### 7.8 The second front end: `myc` (`src/myc.c`, 914 lines)
+### 7.8 The second front end: `myc` (`src/myc.c`, 932 lines)
 
 `--lang=myc` parses a small language — `fn…end`, `let`, `say`, `if`/`else`,
 `while`, `return`, `and`/`or`/`not`, no semicolons — and builds **the same AST**.
@@ -562,19 +573,19 @@ Three things to point at in a viva:
 
 | Layer | What it asserts | Count | Where |
 |---|---|---|---|
-| Exit-code tests | the program returns `// EXPECT: n`, and prints `// EXPECT-OUT:` | 35 | `tests/*.c` |
-| Rejection tests | compilation fails and stderr contains `// EXPECT-ERROR: …` | 41 | `tests/errors/*.c` |
-| Contract assertions | no output on failure; `-w` silences warnings; `--sign` stamps only on request; one per toy-language pair | 5 | `test.bat` / `Makefile` |
+| Exit-code tests | the program returns `// EXPECT: n`, and prints `// EXPECT-OUT:` | 48 | `tests/*.c` |
+| Rejection tests | compilation fails and stderr contains `// EXPECT-ERROR: …` | 52 | `tests/errors/*.c` |
+| Contract assertions | no output on failure; `-w` silences warnings; `--sign` stamps only on request; same-file/temp-path safety; one per toy-language pair | 6 | `test.bat` / `Makefile` |
 | Differential tests | mycc and gcc return the same exit code | 3 | `tests/diff/*.c` |
-| Random programs | the same, on programs nobody wrote | 1000 per run | `tools/fuzz.c` |
+| Random programs | the same, on programs nobody wrote | 1000 per CI run; 700 in the local audit | `tools/fuzz.c` |
 
-**81 checks** in total. Additionally, **every positive test is compiled twice**
+**106 checks** in total. Additionally, **every positive test is compiled twice**
 (optimized and `--no-opt`) and must exit identically with byte-identical stdout
 — that is the invariant that makes §7.5 trustworthy.
 
 ### 10.2 Why differential testing matters here (the honest version)
 
-The first 48-test suite was green while the compiler silently miscompiled
+The early suite was green while the compiler silently miscompiled
 `a[i++] += 5`, `a[i++]++`, `b = a` on structs and `a[i] += 1`. All four returned
 *a* number and all four passed. A reference compiler as the oracle catches that
 class for free: it is what found BUG-020. The lesson in one sentence: **a test
@@ -614,7 +625,7 @@ old compiler (built from HEAD:src/myc.c): exit 1   <- the guard fires
 fixed compiler:                          exit 42   <- and prints literals-ok
 ```
 
-That is the standard the whole report is written to.
+That is the standard the whole report is written to. The 2026-10-26 batch is a deliberate exception in one respect only: the 16 fixes are regression-tested in the working tree but their commits are `pending`, because the user withheld commit/push permission. The ledger marks them `FIXED (working tree)`, not plain `FIXED`, and `BUG-048` remains open.
 
 ### 10.5 CI
 
@@ -622,9 +633,14 @@ Three jobs, every push:
 
 | Job | What it runs | Status |
 |---|---|---|
-| Linux (gcc) | `make` with `-Werror`, 81 checks, difftest, 1000-program fuzz, artifact upload | green, 44 s |
-| Windows (MSYS2/UCRT64) | `make` + 81 checks + difftest + 200-program fuzz, **then** `build.bat` + `test.bat` via `cmd`, artifact upload | green, 2 m 49 s |
-| macOS (clang) | Rosetta probe, `make` + 81 checks + difftest + 100-program fuzz, artifact upload | green, 1 m 4 s |
+| Linux (gcc) | `make` with `-Werror`, 81 checks at that run (106 now), difftest, 1000-program fuzz, artifact upload | green, 44 s |
+| Windows (MSYS2/UCRT64) | `make` + 81 checks at that run (106 now) + difftest + 200-program fuzz, **then** `build.bat` + `test.bat` via `cmd`, artifact upload | green, 2 m 49 s |
+| macOS (clang) | Rosetta probe, `make` + 81 checks at that run (106 now) + difftest + 100-program fuzz, artifact upload | green, 1 m 4 s |
+
+The 81 is the historical count from the first green matrix; the 2026-10-26
+working-tree suite has 106 checks. No CI run has yet exercised the 16 uncommitted
+fixes or the new tests, which is one more reason their status is not plain
+`FIXED`.
 
 **First green matrix: run `40086581248`, 2026-10-24.** Before that date, CI had
 *never* been green on Windows or macOS, and the README claimed otherwise — the
@@ -638,25 +654,28 @@ single most useful finding of the whole project (§12, BUG-030/031).
 
 | Area | Lines |
 |---|---|
-| `src/codegen.c` | 1,729 |
-| `src/parser.c` | 1,900 |
-| `src/semantic.c` | 1,474 |
-| `src/myc.c` | 914 |
-| `src/lexer.c` | 741 |
-| `src/util.c` | 455 |
-| `src/opt.c` | 405 |
-| `src/dump.c` | 350 |
-| `src/main.c` | 268 |
+| `src/codegen.c` | 1,853 |
+| `src/parser.c` | 2,027 |
+| `src/semantic.c` | 1,777 |
+| `src/myc.c` | 932 |
+| `src/lexer.c` | 781 |
+| `src/util.c` | 485 |
+| `src/opt.c` | 413 |
+| `src/dump.c` | 352 |
+| `src/main.c` | 334 |
 | `src/symtab.c` | 101 |
-| **`src/` total** | **8,337** |
-| `include/` (types, AST, tokens) | 429 |
-| **compiler total** | **8,766** |
-| test programs (35 positive + 41 rejection) | 2,618 |
-| tooling (Makefile, batch scripts, fuzzer, difftest) | ~1,205 |
+| **`src/` total** | **9,055** |
+| `include/` (types, AST, tokens) | 447 |
+| **compiler total** | **9,502** |
+| test programs (48 positive + 52 rejection) | 3,204 |
+| differential programs (3) | 229 |
+| tooling (Makefile, batch/shell scripts, fuzzer) | ~1,050 |
 
 ### 11.2 Repository
 
-- 36 commits, 136 tracked files, branches `main` and `Akshat` both green.
+- 37 commits, 136 tracked files; the 2026-10-26 audit batch (tests, docs and
+  source fixes) is uncommitted by request. Branches `main` and `Akshat` were
+  both green at the last committed CI run.
 - `README.md` and everything in `docs/` except three working notes are published;
   `docs\decision.md`, `docs\learn.md` and `docs\instructions.md` are local by
   policy (D8).
@@ -665,45 +684,56 @@ single most useful finding of the whole project (§12, BUG-030/031).
 
 | Metric | `--no-opt` | optimized | Change |
 |---|---|---|---|
-| Assembly lines, 35 tests | 11,055 | 7,315 | **−33.8%** |
-| `example.c` | 263 | 239 | −9.1% |
+| Assembly lines, 48 tests | 14,290 | 9,872 | **−30.9%** |
+| Assembly lines, historical 35-test snapshot | 11,055 | 7,315 | −33.8% |
+| `example.c` | 263 | 239 | −9.1% (historical) |
 | Behaviour differences | — | — | **0** (parity check on every test) |
 
 ### 11.4 Test and fuzz results
 
 | Check | Result |
 |---|---|
-| `test.bat` | `All tests passed` — 81 PASS |
-| `make test` | `All tests passed` — 82 PASS lines (includes the parity line) |
-| `difftest.bat` / `make difftest` | `All differential tests passed` |
-| `make fuzz FUZZ_N=1000` | `PASS: all 1000 programs agreed with the reference compiler` |
-| Clean clone of `main` → `build.bat` + `test.bat` | `Build OK: mycc.exe`, 81 PASS |
-| Clean clone → `fuzz.bat 200 3` | `PASS: all 200 programs agreed` |
-| CI matrix | 3/3 green, run `40087825704` on `main` |
+| `test.bat` (2026-10-26 working tree) | `All tests passed` — **106 PASS** (48 positive, 52 rejection, 6 contract) |
+| `make test` | Historical: `All tests passed` — 82 PASS lines (81 checks + parity line); not re-run for the 106-check suite in this audit |
+| `difftest.bat` (with `CC=C:\w64devkit\bin\gcc.exe`) / `make difftest` | `All differential tests passed` — 3/3 |
+| `fuzz.bat 700 456` (local audit, same `CC`) | `PASS: all 700 programs agreed with the reference compiler` |
+| `make fuzz FUZZ_N=1000` (historical CI) | `PASS: all 1000 programs agreed with the reference compiler` |
+| Clean clone of `main` → `build.bat` + `test.bat` | Historical: `Build OK: mycc.exe`, 81 PASS at the 2026-10-24 snapshot |
+| Clean clone → `fuzz.bat 200 3` | Historical: `PASS: all 200 programs agreed` |
+| CI matrix | 3/3 green, historical run `40087825704` on `main`; the uncommitted audit batch has not run in CI |
+
+The local differential/fuzz runs set `CC=C:\w64devkit\bin\gcc.exe` because the
+first `gcc` on this host's `PATH` is MinGW.org 6.3 (32-bit), which cannot
+assemble 64-bit output. That is a host toolchain-selection issue; the test
+harness itself was not changed in this audit.
 
 ### 11.5 Defect statistics
 
-| Severity | Meaning | Count | Fixed |
-|---|---|---|---|
-| P0 | silently wrong code | 11 | 11 |
-| P1 | ordinary code rejected | 6 | 6 |
-| P2 | bad or silent diagnostic | 6 | 6 |
-| P3 | crash or tooling | 8 | 8 |
-| **Total** | | **31** | **31** |
+| Severity | Meaning | Count | Fixed | Open |
+|---|---|---|---|---|
+| P0 | silently wrong code / destructive output | 15 | 15 | 0 |
+| P1 | ordinary code rejected or wrong on a valid path | 13 | 13 | 0 |
+| P2 | bad or silent diagnostic | 12 | 11 | 1 (`BUG-048`) |
+| P3 | crash or tooling | 8 | 8 | 0 |
+| **Total** | | **48** | **47** | **1** |
+
+The 16 new working-tree entries are fixed but uncommitted (`FIXED (working
+tree)`, commit `pending`); `BUG-048` is the only genuinely open entry.
 
 ---
 
 ## 12. Defect analysis (the most defensible chapter)
 
-The full ledger (`report.md`, in this repository) has 31 entries with reproductions. This
-section extracts what a report needs: the *classes*, the *best examples*, and
-what each class taught.
+The full ledger (`report.md`, in this repository) has 48 entries with
+reproductions: 47 fixed and one open (`BUG-048`). This section extracts what a
+report needs: the *classes*, the *best examples*, and what each class taught.
 
 ### 12.1 The three classes
 
-**Class A — silent wrong code (11 × P0, all fixed; ten rows because
-BUG-001/002 share one root cause).** The compiler accepted a program and
-computed the wrong answer:
+**Class A — silent wrong code (15 × P0, all fixed; the table below is a
+selection).** The compiler accepted a program and computed the wrong answer.
+The original sweep found 11 P0s; the 2026-10-26 audit added BUG-032, BUG-033,
+BUG-036 and the source-destruction case BUG-045 (listed with tooling below):
 
 | Bug | Symptom | Root cause |
 |---|---|---|
@@ -717,18 +747,27 @@ computed the wrong answer:
 | BUG-025 | address-taken local cleared as dead | `&b` not recorded as a use |
 | BUG-026 | `(a / b) + (d % c)` added garbage | nested `/`/`%` clobbered the register holding the left operand |
 | BUG-029 | `say 0x10` printed 0 | toy parser read literal text as base 10 |
+| BUG-032 (audit) | `&a + 1` advanced one element, not one array | `&array` kept the decayed element-pointer type |
+| BUG-033 (audit) | `char c; int x = (c = 300);` left 300 in `x` | assignment expression did not narrow to the stored value |
+| BUG-036 (audit) | `if (0) case 1: r = 5;` still ran the label body | a controlled label did not own the following statement |
 
-**Class B — valid code rejected (6 × P1, all fixed).** `else` never parsed in
-the toy language (BUG-027); `int *p;` at file scope rejected (BUG-005); no casts
-(BUG-006); no comma operator (BUG-007); `08`/`09` mishandled (BUG-008); octal
-escapes rejected (BUG-022).
+**Class B — valid code rejected.** The original six P1 cases were all fixed:
+`else` never parsed in the toy language (BUG-027); `int *p;` at file scope
+rejected (BUG-005); no casts (BUG-006); no comma operator (BUG-007); `08`/`09`
+mishandled (BUG-008); octal escapes rejected (BUG-022). The audit added more
+valid-C rejections: unnamed prototype parameters, `\?`, adjacent string
+literals, integer casts in constant expressions, and some void-expression
+contexts (BUG-039–BUG-041, BUG-046).
 
-**Class C — diagnostics, crashes and tooling (14 × P2/P3, all fixed).** Cascading
-errors for `#include`; a BOM breaking the lexer; stack overflow on deep nesting;
-`break_kind[256]` overflow; a partial `.s` left behind after a failed compile;
-`main(argc, argv)` accepted with garbage `argv`; and three tooling defects:
-`build.bat` with a stale file list (BUG-028), CI missing `cmp` (BUG-030), and
-CI assembling x86-64 output as arm64 (BUG-031).
+**Class C — diagnostics, crashes and tooling.** The original 14 P2/P3 cases were
+all fixed: cascading errors for `#include`; a BOM breaking the lexer; stack
+overflow on deep nesting; `break_kind[256]` overflow; a partial `.s` left behind
+after a failed compile; `main(argc, argv)` accepted with garbage `argv`; and
+three tooling defects (`build.bat` stale file list, CI missing `cmp`, and CI
+assembling x86-64 output as arm64 — BUG-028/030/031). The audit added declaration
+validation, Darwin `%al`, wide-call/symbol limits, NUL and output-alias safety,
+the struct-conditional diagnostic, and one **still-open** diagnostic gap:
+struct values accepted as conditions/comparisons (BUG-048).
 
 ### 12.2 Two cases worth narrating in the viva
 
@@ -751,10 +790,12 @@ untested is decoration.
 ### 12.3 What the ledger changes about the report
 
 It converts "I built a compiler and it works" into a measurable process:
-reproduce → root-cause → fail-before → fix → regression test → record. And the
-record's own evidence column is checkable: **29 of the 31 entries say the defect
-was confirmed by execution**, and only two say `code inspection only` — which is
-the argument for §10's strategy in one statistic. Several were found by *running*
+reproduce → root-cause → fail-before → fix → regression test → record. The
+original 2026-10-24 ledger had execution evidence for 29 of its 31 entries; the
+2026-10-26 batch deliberately keeps its weaker evidence visible too: BUG-043 was
+verified by assembly inspection only (no local macOS runtime), BUG-048 is a
+manual probe and remains open, and BUG-045's NUL-source half has no test file
+(the same-file/temp half does). Several defects were found by *running*
 something rather than reading it: the differential harness (BUG-020), the harness
 itself (BUG-021), a clean clone (BUG-028), a probe of `say 0x10` (BUG-029), and
 the CI logs (BUG-030/031).
@@ -787,6 +828,11 @@ precise limitation.
    translator, not natively.
 8. **Compile-time performance is untested.** The compiler is fast enough for
    these programs (whole suite in seconds) but was never profiled.
+9. **Some declaration/conformance gaps remain.** Array parameter declarators
+   (`int f(int a[])`), pointer-to-array declarations (`int (*p)[2]`), block-scope
+   `struct` tag shadowing and array members inside structs are not implemented.
+   Invalid struct conditions/comparisons are still accepted rather than
+   diagnosed; this is the one open ledger entry, BUG-048.
 
 ---
 
@@ -804,24 +850,27 @@ precise limitation.
 | F8 | Snapshot/golden tests for a handful of `.s` files | the gap limitation 6 describes | hours |
 | F9 | Wider fuzzer (pointers, arrays, structs, `switch`) | extends what the oracle can see (limitation 5) | days |
 | F10 | Tagged releases with notes | CI artifacts exist; a release is the next step | hours |
+| F11 | Scalar-context diagnostics + array/pointer declarators | closes BUG-048 and the main Phase 3 conformance gaps (`int f(int a[])`, `int (*p)[2]`, struct member arrays, block-scope tags) | days |
 
 ---
 
 ## 15. Conclusion
 
-`mycc` is a complete, hand-written compiler for a substantial C subset: 8,766
+`mycc` is a complete, hand-written compiler for a substantial C subset: 9,502
 lines of C99, five pipeline stages, two front ends, real calling conventions,
 four optimizer mechanisms and three object formats. It compiles and runs its own
 test programs, is checked against gcc on hand-written *and* generated programs,
 and is green on Linux, Windows and macOS for the first time as of 2026-10-24.
+The 2026-10-26 audit adds 17 ledger entries and 16 working-tree fixes; one
+diagnostic gap remains open and is recorded as open.
 
 The most transferable result is not the feature list. It is that **the project's
 claims became executable**: `--no-opt` parity turned "the optimizer is safe"
 into a per-test check; byte-identical assembly turned "two front ends, one back
 end" into a `fc /b`; the fuzzer turned "it works on the programs I wrote" into
 "it works on 1000 programs nobody wrote"; and the bug ledger turned "I fixed the
-bugs" into 31 reproductions with fails-before evidence. Two of those 31 —
-BUG-030 and BUG-031 — exist because the project finally read its own CI logs
+bugs" into 48 reproductions, 47 fixes and one openly listed open defect. Two of
+those 48 — BUG-030 and BUG-031 — exist because the project finally read its own CI logs
 instead of trusting its README, which is the most honest sentence in this
 report.
 
@@ -842,7 +891,7 @@ report.
 7. C99 standard (ISO/IEC 9899:1999) — §6.4.4 integer constants, §6.4.5 string
    literals, §6.5 expressions, lvalue conversion.
 8. The project's own documents, all under `docs/`: `REPORT-DRAFT.md` (this
-   report), `report.md` (the 31-entry bug ledger), `Flow.md` (execution flow),
+   report), `report.md` (the 48-entry bug ledger), `Flow.md` (execution flow),
    `ROADMAP.md` (phase plan) and `DEMO.md` (the demo playbook) are published;
    `decision.md` (decision log), `learn.md` (learning guide) and
    `instructions.md` (long manual) are local.
@@ -973,9 +1022,10 @@ given a `.s` file. Every stage of compilation is implemented in this project.
 The README and this report say so explicitly.
 
 **Q18. How long does the suite take?**
-Seconds: Windows 81 checks + parity ≈ 1 min; Linux CI job 44 s including
-build, tests, difftest and a 1000-program fuzz run; macOS 1 m 4 s; Windows CI
-2 m 49 s because it also runs the batch path.
+Seconds: the current Windows suite is 106 checks + parity ≈ 1 min; Linux CI job
+44 s including build, the historical 81 checks, difftest and a 1000-program fuzz
+run; macOS 1 m 4 s; Windows CI 2 m 49 s because it also runs the batch path. The
+2026-10-26 local audit also ran `fuzz.bat 700 456` with 700/700 agreement.
 
 **Q19. What would you do differently?**
 Two things. (a) Build the differential harness earlier — four of the ten P0 bugs
@@ -1001,7 +1051,7 @@ It embeds a provenance string in `.rodata`, so `strings prog.exe | find
 default and has its own contract test (BUG-024 was an empty signature).
 
 **Q23. How is the toy language parsed — a second parser?**
-A second hand-written recursive-descent parser (`src/myc.c`), 914 lines, that
+A second hand-written recursive-descent parser (`src/myc.c`), 932 lines, that
 produces the *same* AST node types. It shares the lexer, the symbol table reset,
 the semantic analyser, the optimizer and the code generator.
 
@@ -1038,12 +1088,12 @@ strong enough to defend.
 
 ## Appendix D — Slide-ready numbers
 
-- **8,766** lines of compiler (8,337 `src/` + 429 `include/`), C99, no libraries.
+- **9,502** lines of compiler (9,055 `src/` + 447 `include/`), C99, no libraries.
 - **10** source files, **2** front ends, **1** back end, **3** targets.
-- **81** automated checks + **3** differential programs + **1000** fuzz cases per run.
-- **33.8%** smaller assembly than the unoptimized path (11,055 → 7,315 lines).
-- **31** defects logged, **31** fixed, **0** open; **11** were silently wrong code.
+- **106** automated checks + **3** differential programs + **1000** fuzz cases per CI run (700 in the local audit).
+- **30.9%** smaller assembly on the current 48-test suite (14,290 → 9,872 lines); the historical 35-test snapshot was 33.8% (11,055 → 7,315).
+- **48** defects logged, **47** fixed, **1** open; **15** are P0 (silent wrong code or destructive output).
 - **3/3** CI jobs green (Linux 44 s · macOS 1 m 4 s · Windows 2 m 49 s),
   first green run `40086581248` on 2026-10-24.
-- **32** commits, **131** tracked files, `README.md` as the only published doc.
+- **37** commits, **136** tracked files, with the audit batch uncommitted; the published docs live in `README.md` and `docs/`.
 - Byte-identical assembly from two different languages (`fc /b`, every run).

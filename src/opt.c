@@ -281,6 +281,12 @@ static void scan_stmt(OptTable *t, ASTNode *n)
             scan_value(t, s->cond);
             scan_stmt(t, s->body);
             break;
+        case AST_CASE:
+        case AST_DEFAULT:
+            /* A label that is the controlled body of an if/loop carries the
+             * statement it names; flat switch labels have no body. */
+            scan_stmt(t, s->body);
+            break;
         case AST_BLOCK:
             scan_stmt(t, s->body);
             break;
@@ -378,6 +384,8 @@ static ASTNode *prune(OptTable *t, ASTNode *n)
         case AST_DO_WHILE:
         case AST_SWITCH:
         case AST_BLOCK:
+        case AST_CASE:
+        case AST_DEFAULT:
             cur->body = prune(t, cur->body);
             break;
         case AST_FOR:

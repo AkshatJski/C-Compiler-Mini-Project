@@ -187,6 +187,20 @@ static void check_object_complete(ASTNode *decl)
     }
 }
 
+/* Signedness of a constant binary operation. The nodes passed here have
+ * already been through check_expr() (or will be typed before folding), so
+ * their val_type fields are meaningful. A shift uses only its left operand's
+ * type; comparisons and arithmetic use the usual conversions. */
+static int const_op_is_unsigned(ASTNode *node)
+{
+    if (node->op == OP_SHL || node->op == OP_SHR)
+    {
+        return binary_is_unsigned(node->left->val_type, NULL);
+    }
+    return binary_is_unsigned(node->left->val_type,
+                              node->right->val_type);
+}
+
 static int fold_const(ASTNode *node, long long *out)
 {
     if (node == NULL)
@@ -196,6 +210,32 @@ static int fold_const(ASTNode *node, long long *out)
     if (node->type == AST_INT_LIT)
     {
         *out = node->value;
+        return 1;
+    }
+    if (node->type == AST_CAST)
+    {
+        /* Integer casts are allowed in C constant expressions. Folding them
+         * here also makes `(int)0` / `(char)256` count as a null pointer
+         * constant, and lets `case (int)2:` and global `int x = (int)3;`
+         * work. Pointer casts are address constants, not integer constants,
+         * so they are deliberately left alone. */
+        if (node->val_type == NULL ||
+            (node->val_type->kind != TYPE_INT &&
+             node->val_type->kind != TYPE_CHAR))
+        {
+            return 0;
+        }
+        if (!fold_const(node->left, out))
+        {
+            return 0;
+        }
+        if (node->val_type->kind == TYPE_CHAR)
+        {
+            unsigned char byte = (unsigned char)(*out & 0xFF);
+            *out = node->val_type->is_unsigned
+                       ? (long long)byte
+                       : (long long)(signed char)byte;
+        }
         return 1;
     }
     if (node->type == AST_TERNARY)
@@ -216,30 +256,35 @@ static int fold_const(ASTNode *node, long long *out)
     {
         return 0;
     }
+
+    int uns = const_op_is_unsigned(node);
+    unsigned long long ul = (unsigned long long)l;
+    unsigned long long ur = (unsigned long long)r;
+
     switch (node->op)
     {
     case OP_ADD:
-        *out = l + r;
+        *out = uns ? (long long)(ul + ur) : l + r;
         return 1;
     case OP_SUB:
-        *out = l - r;
+        *out = uns ? (long long)(ul - ur) : l - r;
         return 1;
     case OP_MUL:
-        *out = l * r;
+        *out = uns ? (long long)(ul * ur) : l * r;
         return 1;
     case OP_DIV:
         if (r == 0)
         {
             return 0;
         }
-        *out = l / r;
+        *out = uns ? (long long)(ul / ur) : l / r;
         return 1;
     case OP_MOD:
         if (r == 0)
         {
             return 0;
         }
-        *out = l % r;
+        *out = uns ? (long long)(ul % ur) : l % r;
         return 1;
     case OP_BIT_AND:
         *out = l & r;
@@ -251,10 +296,25 @@ static int fold_const(ASTNode *node, long long *out)
         *out = l ^ r;
         return 1;
     case OP_SHL:
-        *out = l << r;
-        return 1;
     case OP_SHR:
-        *out = l >> r;
+        /* A negative or too-large shift count is undefined C; do not invoke
+         * the host's undefined behaviour while trying to fold it. */
+        if (r < 0 || r >= 64)
+        {
+            return 0;
+        }
+        if (node->op == OP_SHL)
+        {
+            *out = (long long)(ul << (unsigned)r);
+        }
+        else if (uns)
+        {
+            *out = (long long)(ul >> (unsigned)r);
+        }
+        else
+        {
+            *out = l >> r;
+        }
         return 1;
     case OP_AND:
         *out = (l != 0) && (r != 0);
@@ -269,16 +329,16 @@ static int fold_const(ASTNode *node, long long *out)
         *out = l != r;
         return 1;
     case OP_LT:
-        *out = l < r;
+        *out = uns ? ul < ur : l < r;
         return 1;
     case OP_LE:
-        *out = l <= r;
+        *out = uns ? ul <= ur : l <= r;
         return 1;
     case OP_GT:
-        *out = l > r;
+        *out = uns ? ul > ur : l > r;
         return 1;
     case OP_GE:
-        *out = l >= r;
+        *out = uns ? ul >= ur : l >= r;
         return 1;
     case OP_COMMA:
         /* `(a, b)` is not a constant expression: the left side exists for its
@@ -393,6 +453,14 @@ static void sem_decl_pass(ASTNode *prog)
                              "'main' must take no parameters; declare it as "
                              "'int main(void)'");
             }
+            if (strcmp(d->name, "main") == 0 &&
+                (d->val_type == NULL || d->val_type->kind != TYPE_INT ||
+                 d->val_type->is_unsigned))
+            {
+                report_error(d->line, d->col,
+                             "'main' must return 'int'; declare it as "
+                             "'int main(void)'");
+            }
 
             /* Passing a struct by value needs a hidden-pointer ABI (or a
              * per-argument copy) that mycc does not have. Say so here, where
@@ -427,6 +495,51 @@ static void sem_decl_pass(ASTNode *prog)
                     report_error(d->line, d->col,
                                  "conflicting parameter count for '%s'",
                                  d->name);
+                    continue;
+                }
+                /* Two declarations of the same function must agree on the
+                 * return type and on every parameter type. Without this check
+                 * a prototype could type-check call sites one way while the
+                 * definition generated a different ABI. */
+                if (!same_type(existing->type, d->val_type))
+                {
+                    char oldbuf[TYPE_DESCRIBE_MAX];
+                    char newbuf[TYPE_DESCRIBE_MAX];
+                    type_describe(existing->type, oldbuf, sizeof(oldbuf));
+                    type_describe(d->val_type, newbuf, sizeof(newbuf));
+                    report_error(d->line, d->col,
+                                 "conflicting return type for '%s' "
+                                 "(previously '%s', now '%s')",
+                                 d->name, oldbuf, newbuf);
+                    continue;
+                }
+                ASTNode *old_param = existing->param_list;
+                ASTNode *new_param = d->left;
+                int param_index = 1;
+                int param_conflict = 0;
+                while (old_param != NULL && new_param != NULL)
+                {
+                    if (!same_type(old_param->val_type, new_param->val_type))
+                    {
+                        char oldbuf[TYPE_DESCRIBE_MAX];
+                        char newbuf[TYPE_DESCRIBE_MAX];
+                        type_describe(old_param->val_type, oldbuf,
+                                      sizeof(oldbuf));
+                        type_describe(new_param->val_type, newbuf,
+                                      sizeof(newbuf));
+                        report_error(new_param->line, new_param->col,
+                                     "conflicting type for parameter %d of "
+                                     "'%s' (previously '%s', now '%s')",
+                                     param_index, d->name, oldbuf, newbuf);
+                        param_conflict = 1;
+                        break;
+                    }
+                    old_param = old_param->next;
+                    new_param = new_param->next;
+                    param_index++;
+                }
+                if (param_conflict)
+                {
                     continue;
                 }
                 if (d->body != NULL)
@@ -477,6 +590,24 @@ static void sem_decl_pass(ASTNode *prog)
             check_object_complete(d);
             if (d->left != NULL)
             {
+                /* Type the initializer first. Constant folding needs the
+                 * operand types to apply C's unsigned conversions (for
+                 * example `((unsigned int)-1 > 0)`), and this also reports
+                 * ordinary expression errors before the "not constant"
+                 * message. */
+                check_value(d->left);
+                if (!types_compatible(d->val_type, d->left->val_type,
+                                      d->left))
+                {
+                    char tbuf[TYPE_DESCRIBE_MAX];
+                    char fbuf[TYPE_DESCRIBE_MAX];
+                    type_describe(d->val_type, tbuf, sizeof(tbuf));
+                    type_describe(d->left->val_type, fbuf, sizeof(fbuf));
+                    report_error(d->line, d->col,
+                                 "initializing '%s' of type '%s' with "
+                                 "incompatible type '%s'",
+                                 d->name, tbuf, fbuf);
+                }
                 long long v;
                 if (!fold_const(d->left, &v))
                 {
@@ -604,11 +735,14 @@ static void check_call(ASTNode *call)
     }
 
     int argc = count_args(call);
-    if (sym->is_extern)
+    if (sym->is_extern && !sym->is_builtin)
     {
         /* A variadic extern (`printf`) legitimately takes more arguments than
          * its declaration names; only the declared prefix is type-checked
-         * below, and the count must be at least that prefix. */
+         * below, and the count must be at least that prefix. The `print_*`
+         * helpers are extern as an implementation detail but have a fixed
+         * signature: accepting extra arguments would silently drop them (or
+         * their side effects) when the call is rewritten. */
         if (argc < sym->param_count)
         {
             report_error(call->line, call->col,
@@ -662,6 +796,13 @@ static void check_value(ASTNode *expr)
                      "void function '%s' used where a value is required",
                      expr->name);
     }
+    else if (expr != NULL && expr->vtype == TYPE_VOID)
+    {
+        /* A cast to void (or a conditional whose branches are void) is an
+         * expression statement, not a value. C rejects using it here. */
+        report_error(expr->line, expr->col,
+                     "void value used where a value is required");
+    }
 }
 
 static void check_expr(ASTNode *expr)
@@ -691,14 +832,37 @@ static void check_expr(ASTNode *expr)
         }
         break;
     case AST_ADDR_OF:
-        check_expr(expr->left);
-        if (expr->left->type != AST_VAR_REF && expr->left->type != AST_DEREF && expr->left->type != AST_MEMBER_ACCESS)
+    {
+        /* Remember a variable's declared type before check_expr() applies
+         * array-to-pointer decay. `&a` has type `int (*)[N]`, so `&a + 1`
+         * must advance by the whole array, not by one element. */
+        Type *addr_type = NULL;
+        if (expr->left->type == AST_VAR_REF)
         {
-            report_error(expr->line, expr->col, "cannot take address of non-lvalue");
+            Symbol *sym = symbol_lookup(expr->left->name);
+            if (sym != NULL && !sym->is_function)
+            {
+                addr_type = sym->type;
+            }
         }
-        expr->val_type = type_ptr(expr->left->val_type ? expr->left->val_type : type_int());
+        check_expr(expr->left);
+        if (expr->left->type != AST_VAR_REF &&
+            expr->left->type != AST_DEREF &&
+            expr->left->type != AST_MEMBER_ACCESS)
+        {
+            report_error(expr->line, expr->col,
+                         "cannot take address of non-lvalue");
+        }
+        if (addr_type != NULL && addr_type->kind == TYPE_ARRAY)
+        {
+            expr->left->val_type = addr_type;
+            expr->left->vtype = TYPE_ARRAY;
+        }
+        expr->val_type = type_ptr(expr->left->val_type ? expr->left->val_type
+                                                       : type_int());
         expr->vtype = TYPE_PTR;
         break;
+    }
     case AST_DEREF:
         check_expr(expr->left);
         /* The operand may be a pointer *or* an array expression: `a[i][j]`
@@ -731,6 +895,21 @@ static void check_expr(ASTNode *expr)
         }
         break;
     case AST_BINARY_OP:
+        if (expr->op == OP_COMMA)
+        {
+            /* The left operand is evaluated only for its side effects, so a
+             * void expression is legal there: `(void)x, y` and a `void` call
+             * in a for-loop step are both valid C. The result has the type of
+             * the right operand, which must be a value if the comma expression
+             * itself is used as one -- the caller's check_value() enforces
+             * that. */
+            check_expr(expr->left);
+            check_expr(expr->right);
+            expr->val_type =
+                expr->right->val_type ? expr->right->val_type : type_int();
+            expr->vtype = expr->val_type->kind;
+            break;
+        }
         check_value(expr->left);
         check_value(expr->right);
 
@@ -764,7 +943,10 @@ static void check_expr(ASTNode *expr)
             }
             else
             {
-                expr->val_type = type_int();
+                expr->val_type = binary_is_unsigned(expr->left->val_type,
+                                                    expr->right->val_type)
+                                     ? type_uint()
+                                     : type_int();
                 expr->vtype = TYPE_INT;
             }
         }
@@ -810,35 +992,65 @@ static void check_expr(ASTNode *expr)
             }
             else
             {
-                expr->val_type = type_int();
+                expr->val_type = binary_is_unsigned(expr->left->val_type,
+                                                    expr->right->val_type)
+                                     ? type_uint()
+                                     : type_int();
                 expr->vtype = TYPE_INT;
             }
         }
-        else if (expr->op == OP_COMMA)
-        {
-            /* `a, b` evaluates `a` for its side effects and yields `b`. */
-            expr->val_type = expr->right->val_type;
-            expr->vtype = expr->right->vtype;
-        }
         else
         {
-            /* Simplified usual arithmetic conversions: the result is
-             * unsigned when either operand is `unsigned int` or a pointer.
-             * (Both operands are already 64-bit here, so rank reduces to
-             * "unsigned int wins"; `unsigned char` deliberately does not
-             * qualify -- see binary_is_unsigned().) */
-            expr->val_type = binary_is_unsigned(expr->left->val_type,
-                                                expr->right->val_type)
-                                 ? type_uint()
-                                 : type_int();
+            /* Comparisons and the short-circuit logical operators always
+             * have type `int`, even when their operands are pointers or
+             * unsigned. For shifts, C converts the operands separately and
+             * gives the result the promoted left operand's type; the right
+             * operand's signedness must not leak into the result type. The
+             * remaining arithmetic/bitwise operators use the usual arithmetic
+             * conversions, where `unsigned int` wins over `int`. */
+            if (expr->op == OP_EQ || expr->op == OP_NE ||
+                expr->op == OP_LT || expr->op == OP_LE ||
+                expr->op == OP_GT || expr->op == OP_GE ||
+                expr->op == OP_AND || expr->op == OP_OR)
+            {
+                expr->val_type = type_int();
+            }
+            else if (expr->op == OP_SHL || expr->op == OP_SHR)
+            {
+                expr->val_type =
+                    binary_is_unsigned(expr->left->val_type, NULL)
+                        ? type_uint()
+                        : type_int();
+            }
+            else
+            {
+                /* Simplified usual arithmetic conversions: the result is
+                 * unsigned when either operand is `unsigned int` or a
+                 * pointer. (Both operands are already 64-bit here, so rank
+                 * reduces to "unsigned int wins"; `unsigned char`
+                 * deliberately does not qualify -- see
+                 * binary_is_unsigned().) */
+                expr->val_type = binary_is_unsigned(expr->left->val_type,
+                                                    expr->right->val_type)
+                                     ? type_uint()
+                                     : type_int();
+            }
             expr->vtype = TYPE_INT;
         }
         break;
     case AST_CAST:
         /* The parser already recorded the target type. A cast is exactly the
          * explicit opt-in for otherwise-incompatible conversions, so only the
-         * operand still needs checking (BUG-006). */
-        check_value(expr->left);
+         * operand still needs checking (BUG-006). A cast *to* void discards the
+         * operand, so even a void expression is allowed there. */
+        if (expr->val_type != NULL && expr->val_type->kind == TYPE_VOID)
+        {
+            check_expr(expr->left);
+        }
+        else
+        {
+            check_value(expr->left);
+        }
         if (expr->val_type != NULL)
         {
             expr->vtype = expr->val_type->kind;
@@ -846,10 +1058,77 @@ static void check_expr(ASTNode *expr)
         break;
     case AST_TERNARY:
         check_value(expr->cond);
-        check_value(expr->left);
-        check_value(expr->right);
-        expr->val_type = expr->left->val_type ? expr->left->val_type : type_int();
-        expr->vtype = expr->val_type->kind;
+        /* A conditional with a void branch has void type; it is legal as a
+         * discarded expression statement. If the whole conditional is used as
+         * a value, check_value() at the use site rejects it. */
+        check_expr(expr->left);
+        check_expr(expr->right);
+        if (expr->left->vtype == TYPE_VOID || expr->right->vtype == TYPE_VOID)
+        {
+            expr->val_type = type_void();
+            expr->vtype = TYPE_VOID;
+        }
+        else if (type_is_pointer(expr->left->val_type) &&
+                 is_null_constant(expr->right))
+        {
+            /* `c ? 0 : p`: the null pointer constant takes the pointer type of
+             * the other branch instead of making the whole conditional an
+             * int. Otherwise a valid pointer assignment would be rejected. */
+            expr->val_type = expr->left->val_type;
+            expr->vtype = TYPE_PTR;
+        }
+        else if (type_is_pointer(expr->right->val_type) &&
+                 is_null_constant(expr->left))
+        {
+            expr->val_type = expr->right->val_type;
+            expr->vtype = TYPE_PTR;
+        }
+        else if (type_is_pointer(expr->left->val_type) &&
+                 type_is_pointer(expr->right->val_type))
+        {
+            /* Both branches are pointers (arrays have already decayed in
+             * check_expr). Keeping the left branch's type is sufficient for
+             * code generation; C's composite pointer type only matters for
+             * diagnostics this subset does not model. */
+            expr->val_type = expr->left->val_type;
+            expr->vtype = TYPE_PTR;
+        }
+        else if (type_is_pointer(expr->left->val_type) ||
+                 type_is_pointer(expr->right->val_type))
+        {
+            /* An integer can be a pointer only when it is the null pointer
+             * constant, which the two arms above already handled. */
+            report_error(expr->line, expr->col,
+                         "conditional expression combines pointer and integer "
+                         "operands");
+            expr->val_type = type_int();
+            expr->vtype = TYPE_INT;
+        }
+        else if (expr->left->val_type != NULL &&
+                 expr->left->val_type->kind == TYPE_STRUCT &&
+                 expr->right->val_type != NULL &&
+                 expr->right->val_type->kind == TYPE_STRUCT)
+        {
+            /* Valid C, but the back end has no struct-copy value model. Give a
+             * front-end diagnostic instead of letting codegen abort. */
+            report_error(expr->line, expr->col,
+                         "struct-valued conditional expressions are not "
+                         "supported");
+            expr->val_type = expr->left->val_type;
+            expr->vtype = TYPE_STRUCT;
+        }
+        else
+        {
+            /* C's usual arithmetic conversions: two integer/char branches
+             * promote to `int`, unless one is `unsigned int`. Picking the
+             * left branch's type used to make `(c ? -1 : u) / 2` a signed
+             * division even though the conditional itself is unsigned. */
+            expr->val_type = binary_is_unsigned(expr->left->val_type,
+                                                expr->right->val_type)
+                                 ? type_uint()
+                                 : type_int();
+            expr->vtype = TYPE_INT;
+        }
         break;
     case AST_ASSIGN:
         if (expr->left->type == AST_VAR_REF)
@@ -899,6 +1178,12 @@ static void check_expr(ASTNode *expr)
             {
                 /* `p -= q` is a difference in elements, not in bytes. */
                 binop->val_type = type_int();
+                binop->vtype = TYPE_INT;
+            }
+            else if (binop->op == OP_SHL || binop->op == OP_SHR)
+            {
+                binop->val_type =
+                    binary_is_unsigned(ltype, NULL) ? type_uint() : type_int();
                 binop->vtype = TYPE_INT;
             }
             else
@@ -1036,6 +1321,10 @@ static void check_switch(ASTNode *node, CheckCtx *ctx)
         if (item->type == AST_CASE)
         {
             item->case_index = index++;
+            /* Type the label before folding it: integer casts and the
+             * signedness of the operands must be known to evaluate the
+             * constant expression with C's conversions. */
+            check_value(item->left);
             long long v;
             if (!fold_const(item->left, &v))
             {
@@ -1172,7 +1461,9 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
                 check_stmt(n->left, ctx);
             }
             check_value(n->cond);
-            check_value(n->right);
+            /* The step's value is discarded, so C allows a void expression
+             * there (`for (...; ...; log())`). */
+            check_expr(n->right);
             ctx->loop_depth++;
             check_stmt(n->body, ctx);
             ctx->loop_depth--;
@@ -1188,6 +1479,9 @@ static void check_stmt(ASTNode *stmt, CheckCtx *ctx)
                 report_error(n->line, n->col,
                              "'case'/'default' label not within a switch");
             }
+            /* A label may carry the statement it names when it is the body of
+             * an if/loop (`if (0) case 1: x = 5;`). */
+            check_stmt(n->body, ctx);
             break;
         case AST_BREAK:
             if (ctx->loop_depth == 0 && ctx->switch_depth == 0)
@@ -1235,7 +1529,7 @@ static int has_default_label(ASTNode *stmt)
         }
         if ((n->type == AST_BLOCK || n->type == AST_IF ||
              n->type == AST_WHILE || n->type == AST_DO_WHILE ||
-             n->type == AST_FOR) &&
+             n->type == AST_FOR || n->type == AST_CASE) &&
             has_default_label(n->body))
         {
             return 1;
@@ -1303,6 +1597,11 @@ static int stmt_terminates(ASTNode *stmt)
         return stmt_terminates(stmt->body) ||
                (fold_const(stmt->cond, &v) && v != 0);
     }
+    case AST_CASE:
+    case AST_DEFAULT:
+        /* Only controlled labels carry their labelled statement; a flat label
+         * in a switch body has no body of its own. */
+        return stmt_terminates(stmt->body);
     case AST_SWITCH:
     {
         /* Without a `default:` an unmatched value skips every case, so the
@@ -1406,6 +1705,8 @@ static void check_returns(ASTNode *fn, ASTNode *stmt)
             break;
         case AST_SWITCH:
         case AST_BLOCK:
+        case AST_CASE:
+        case AST_DEFAULT:
             check_returns(fn, n->body);
             break;
         default:
@@ -1431,7 +1732,8 @@ static void check_returns(ASTNode *fn, ASTNode *stmt)
  * calling convention. A program that defines one of these names itself keeps
  * its own definition: sem_decl_pass has already inserted it, and codegen only
  * lowers the builtin when no body exists. */
-static void register_builtin(const char *name, Type *ret, Type *arg, int argc)
+static void register_builtin(const char *name, Type *ret, Type *arg, int argc,
+                              int helper)
 {
     if (symbol_lookup(name) != NULL)
     {
@@ -1439,9 +1741,9 @@ static void register_builtin(const char *name, Type *ret, Type *arg, int argc)
     }
     Symbol *sym = symbol_insert(name, ret, 1);
     sym->is_function = 1;
-    sym->is_defined = 1; /* nothing to link: codegen emits the calls */
-    sym->is_extern = 1;  /* variadic-friendly arity rule */
-    sym->is_builtin = 1;
+    sym->is_defined = 1;   /* nothing to link: codegen emits the calls */
+    sym->is_extern = 1;    /* variadic-friendly arity rule for libc calls */
+    sym->is_builtin = helper; /* rewritten helper with a fixed signature */
     sym->param_count = argc;
 
     ASTNode *first = NULL;
@@ -1464,16 +1766,17 @@ static void register_builtins(void)
 {
     Type *int_type = type_int();
     /* Source-level helpers: these are rewritten into libc calls. */
-    register_builtin("print_int", int_type, int_type, 1);
-    register_builtin("print_char", int_type, int_type, 1);
-    register_builtin("print_str", int_type, type_ptr(type_char()), 1);
-    register_builtin("print_endl", int_type, NULL, 0);
-    /* The two libc functions the rewrites target, and the ones a program is
-     * most likely to call directly. Declaring them here means no `extern`
-     * line is needed for the common case. */
-    register_builtin("printf", int_type, type_ptr(type_char()), 1);
-    register_builtin("puts", int_type, type_ptr(type_char()), 1);
-    register_builtin("putchar", int_type, int_type, 1);
+    register_builtin("print_int", int_type, int_type, 1, 1);
+    register_builtin("print_char", int_type, int_type, 1, 1);
+    register_builtin("print_str", int_type, type_ptr(type_char()), 1, 1);
+    register_builtin("print_endl", int_type, NULL, 0, 1);
+    /* The libc functions the rewrites target, and the ones a program is most
+     * likely to call directly. Declaring them here means no `extern` line is
+     * needed for the common case. printf must stay variadic-friendly; the
+     * others keep the same rule as an `extern` declaration. */
+    register_builtin("printf", int_type, type_ptr(type_char()), 1, 0);
+    register_builtin("puts", int_type, type_ptr(type_char()), 1, 0);
+    register_builtin("putchar", int_type, int_type, 1, 0);
 }
 
 int semantic_analyze(ASTNode *root)
@@ -1491,7 +1794,10 @@ int semantic_analyze(ASTNode *root)
     {
         if (d->type == AST_FUNC_DECL)
         {
-            if (strcmp(d->name, "main") == 0)
+            /* A prototype declares main but does not provide the symbol the C
+             * runtime calls. Counting it here used to let `int main(void);`
+             * compile successfully and fail only at link time. */
+            if (strcmp(d->name, "main") == 0 && d->body != NULL)
             {
                 have_main = 1;
             }

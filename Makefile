@@ -131,6 +131,25 @@ test: $(TARGET)
 		echo "FAIL: a failed compile left $(TESTDIR)/contract.s behind"; exit 1; \
 	fi; \
 	echo "PASS: failed compile leaves no output file"
+	@cp tests/26_hello_world.c "$(TESTDIR)/same_file.orig"; \
+	cp "$(TESTDIR)/same_file.orig" "$(TESTDIR)/same_file.c"; \
+	if ./$(TARGET) "$(TESTDIR)/same_file.c" -o "$(TESTDIR)/./same_file.c" \
+			>/dev/null 2>&1; then \
+		echo "FAIL: same-file guard missed an alternate path spelling"; exit 1; \
+	fi; \
+	if ! cmp -s "$(TESTDIR)/same_file.orig" "$(TESTDIR)/same_file.c"; then \
+		echo "FAIL: same-file compile overwrote its source"; exit 1; \
+	fi; \
+	cp "$(TESTDIR)/same_file.orig" "$(TESTDIR)/tmp_collision.mycc-tmp"; \
+	if ./$(TARGET) "$(TESTDIR)/tmp_collision.mycc-tmp" \
+			-o "$(TESTDIR)/tmp_collision" >/dev/null 2>&1; then \
+		echo "FAIL: temp-output guard missed a source-name collision"; exit 1; \
+	fi; \
+	if ! cmp -s "$(TESTDIR)/same_file.orig" \
+			"$(TESTDIR)/tmp_collision.mycc-tmp"; then \
+		echo "FAIL: temp-output compile overwrote its source"; exit 1; \
+	fi; \
+	echo "PASS: same-file and temp-output guards protect the source"
 	@rm -f "$(TESTDIR)/silent.out"; \
 	if ! ./$(TARGET) -w tests/25_fall_off_end.c -o "$(TESTDIR)/silent.s" \
 			>"$(TESTDIR)/silent.out" 2>&1; then \

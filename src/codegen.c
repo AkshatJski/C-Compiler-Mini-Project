@@ -23,12 +23,20 @@ static TargetKind target;  /* selects symbol naming + ELF-only directives */
  * step, and no emitted line names two program symbols. */
 static const char *sym_name(const char *name)
 {
-    static char buf[512];
+    static char *buf;
+    static size_t buf_cap;
     if (target != TARGET_DARWIN)
     {
         return name;
     }
-    snprintf(buf, sizeof(buf), "_%s", name);
+    size_t need = strlen(name) + 2; /* '_' + name + NUL */
+    if (need > buf_cap)
+    {
+        buf_cap = need;
+        buf = xrealloc(buf, buf_cap);
+    }
+    buf[0] = '_';
+    memcpy(buf + 1, name, strlen(name) + 1);
     return buf;
 }
 
@@ -79,9 +87,9 @@ static int stack_arg_base(void)
  * direct call; anything else is an external library symbol and, on ELF, has
  * to go through the PLT so it still links when the output is position
  * independent. */
-#define MAX_DEFINED 256
-static const char *defined_names[MAX_DEFINED];
+static const char **defined_names;
 static int defined_count;
+static int defined_capacity;
 
 static int is_defined_here(const char *name)
 {
@@ -97,13 +105,21 @@ static int is_defined_here(const char *name)
 
 static const char *call_target(const char *name)
 {
-    static char buf[512];
+    static char *buf;
+    static size_t buf_cap;
+    const char *sym = sym_name(name);
     if (target == TARGET_LINUX && !is_defined_here(name))
     {
-        snprintf(buf, sizeof(buf), "%s@PLT", sym_name(name));
+        size_t need = strlen(sym) + sizeof("@PLT");
+        if (need > buf_cap)
+        {
+            buf_cap = need;
+            buf = xrealloc(buf, buf_cap);
+        }
+        snprintf(buf, buf_cap, "%s@PLT", sym);
         return buf;
     }
-    return sym_name(name);
+    return sym;
 }
 
 /* Breakdown used by gen_call: `%rsp` must be 16-byte aligned at the call. */
@@ -442,6 +458,19 @@ static int binop_clobbers_pool(BinaryOp op)
     return op == OP_DIV || op == OP_MOD;
 }
 
+/* Signedness of the x86 instruction for a binary operator. Comparisons use
+ * the usual arithmetic conversions (and pointers order as unsigned), but a
+ * shift's result type comes from its promoted left operand alone: `-1 >> u`
+ * is still an arithmetic shift even when `u` is unsigned. */
+static int binop_is_unsigned(BinaryOp op, const Type *left, const Type *right)
+{
+    if (op == OP_SHL || op == OP_SHR)
+    {
+        return binary_is_unsigned(left, NULL);
+    }
+    return binary_is_unsigned(left, right);
+}
+
 /* Consumes the top temporary as the LEFT operand of `op`, combining straight
  * out of its register when it has one. This is where the instruction is saved:
  * no `movq` back into %rcx at all. */
@@ -729,8 +758,9 @@ static void gen_binary(ASTNode *node)
     /* Decided from the *operand* types (not the result type) so that div,
      * mod, >> and the ordered comparisons pick the right flavour of x86
      * instruction. Must agree exactly with the folding done in semantic.c. */
-    temp_combine(node->op, binary_is_unsigned(node->left->val_type,
-                                              node->right->val_type));
+    temp_combine(node->op, binop_is_unsigned(node->op,
+                                             node->left->val_type,
+                                             node->right->val_type));
 }
 
 /* Applies one binary operator to %rcx (left) and %rax (right) and leaves the
@@ -884,7 +914,8 @@ static int gen_binary_imm(ASTNode *node)
     }
 
     long long v = node->right->value;
-    int uns = binary_is_unsigned(node->left->val_type, node->right->val_type);
+    int uns = binop_is_unsigned(node->op, node->left->val_type,
+                                node->right->val_type);
 
     switch (node->op)
     {
@@ -990,6 +1021,22 @@ static void emit_store_indirect(const char *addr_reg, const Type *t, int vtype)
     }
 }
 
+/* An assignment expression's value is the value stored in the lvalue after
+ * conversion to the lvalue's type (C11 6.5.16p3). Stores to `char` keep only
+ * the low byte, so the value left in %rax must be sign- or zero-extended from
+ * %al as well; otherwise `char c; int x = (c = 300);` would leave 300 in x
+ * instead of 44. */
+static void convert_assignment_value(const Type *t, int vtype)
+{
+    int is_char = (t != NULL && t->kind == TYPE_CHAR) || vtype == TYPE_CHAR;
+    if (!is_char)
+    {
+        return;
+    }
+    emit_line((t != NULL && t->is_unsigned) ? "\tmovzbq %%al, %%rax"
+                                            : "\tmovsbq %%al, %%rax");
+}
+
 /* Emits `lvalue op= value` for an lvalue whose address is worth computing only
  * once. The address is formed, the old value loaded through it, the right
  * operand evaluated, and the result stored back. Without this,
@@ -1013,12 +1060,15 @@ static void gen_compound_assign(ASTNode *node)
 
     /* The old value is consumed as the left operand; the address is still one
      * level down, in its register or in its stack slot. */
-    temp_combine(binop->op, binary_is_unsigned(target->val_type,
-                                               binop->right->val_type));
+    temp_combine(binop->op, binop_is_unsigned(binop->op,
+                                              target->val_type,
+                                              binop->right->val_type));
 
     temp_pop_into("%rcx"); /* %rcx = address */
     emit_store_indirect("%rcx", target->val_type, target->vtype);
-    /* %rax already holds the new value, which is the value of the assignment. */
+    /* %rax holds the new value; narrow it to the type actually stored so the
+     * compound assignment expression has the correct value. */
+    convert_assignment_value(target->val_type, target->vtype);
 }
 
 static void gen_assign(ASTNode *node)
@@ -1094,6 +1144,7 @@ static void gen_assign(ASTNode *node)
     {
         gen_expr(node->right);
         emit_var_store(node->left);
+        convert_assignment_value(node->left->val_type, node->left->vtype);
     }
     else if (node->left->type == AST_DEREF ||
              node->left->type == AST_MEMBER_ACCESS)
@@ -1110,6 +1161,7 @@ static void gen_assign(ASTNode *node)
         temp_pop_into("%rax");
 
         emit_store_indirect("%rcx", node->left->val_type, node->left->vtype);
+        convert_assignment_value(node->left->val_type, node->left->vtype);
     }
 }
 
@@ -1196,11 +1248,16 @@ static void gen_ternary(ASTNode *node)
 
 static void gen_call(ASTNode *node)
 {
-    ASTNode *args[32];
     int n = 0;
-    for (ASTNode *a = node->args; a != NULL && n < 32; a = a->next)
+    for (ASTNode *a = node->args; a != NULL; a = a->next)
     {
-        args[n++] = a;
+        n++;
+    }
+    ASTNode **args = n > 0 ? xmalloc((size_t)n * sizeof(*args)) : NULL;
+    int next_arg = 0;
+    for (ASTNode *a = node->args; a != NULL; a = a->next)
+    {
+        args[next_arg++] = a;
     }
 
     int nreg = arg_reg_count();
@@ -1254,10 +1311,11 @@ static void gen_call(ASTNode *node)
         pushed_count += lay.shadow;
     }
 
-    /* System V uses %al to carry the number of vector registers used by a
-     * variadic call; printf reads it. Zero is correct for every call mycc
-     * makes, and non-variadic callees ignore it. */
-    if (target != TARGET_WINDOWS && target != TARGET_DARWIN)
+    /* The System V ABI (Linux and macOS, unlike Win64) uses %al to carry the
+     * number of vector registers used by a variadic call; printf reads it.
+     * Zero is correct for every call mycc makes, and non-variadic callees
+     * ignore it. */
+    if (target != TARGET_WINDOWS)
     {
         emit_line("\tmovb $0, %%al");
     }
@@ -1272,6 +1330,7 @@ static void gen_call(ASTNode *node)
     }
 
     temp_unspill(spilled);
+    free(args);
 }
 
 static void gen_addr(ASTNode *node)
@@ -1397,21 +1456,67 @@ static void gen_expr(ASTNode *node)
 /* Statements                                                         */
 /* ------------------------------------------------------------------ */
 
+/* Does this statement subtree contain a case/default label that belongs to
+ * the switch surrounding it? A nested switch owns its own labels, so its body
+ * is not searched. The constant-condition optimizations below delete an arm
+ * that cannot execute, but a switch may still jump directly to a case label
+ * inside that arm; dropping the label would leave an undefined assembler
+ * symbol. */
+static int has_switch_label(ASTNode *stmt)
+{
+    for (ASTNode *n = stmt; n != NULL; n = n->next)
+    {
+        switch (n->type)
+        {
+        case AST_CASE:
+        case AST_DEFAULT:
+            return 1;
+        case AST_IF:
+            if (has_switch_label(n->body) || has_switch_label(n->right))
+            {
+                return 1;
+            }
+            break;
+        case AST_WHILE:
+        case AST_DO_WHILE:
+        case AST_FOR:
+        case AST_BLOCK:
+            if (has_switch_label(n->body))
+            {
+                return 1;
+            }
+            break;
+        case AST_SWITCH:
+            /* Labels in a nested switch belong to that switch, not to the
+             * one whose dead arm we are considering. */
+            break;
+        default:
+            break;
+        }
+    }
+    return 0;
+}
+
 static void gen_if(ASTNode *node)
 {
     int truth;
     if (const_truth(node->cond, &truth))
     {
-        /* `if (1)` / `if (0)`: emit only the live arm. */
-        if (truth)
+        /* `if (1)` / `if (0)`: emit only the live arm, unless the dead arm
+         * contains a case/default label that an enclosing switch can jump to. */
+        ASTNode *dead = truth ? node->right : node->body;
+        if (!has_switch_label(dead))
         {
-            gen_stmt(node->body);
+            if (truth)
+            {
+                gen_stmt(node->body);
+            }
+            else if (node->right != NULL)
+            {
+                gen_stmt(node->right);
+            }
+            return;
         }
-        else if (node->right != NULL)
-        {
-            gen_stmt(node->right);
-        }
-        return;
     }
 
     int id = label_counter++;
@@ -1437,11 +1542,12 @@ static void gen_if(ASTNode *node)
 static void gen_while(ASTNode *node)
 {
     int truth;
-    if (const_truth(node->cond, &truth) && !truth)
+    if (const_truth(node->cond, &truth) && !truth &&
+        !has_switch_label(node->body))
     {
-        /* `while (0)` never runs its body, so nothing is emitted -- not even
-         * labels: any `break`/`continue` inside is unreachable and is not
-         * reached by the walker either. */
+        /* `while (0)` never runs its body, so nothing is emitted. Keep the
+         * body when it contains a case/default label an enclosing switch can
+         * jump into; that jump bypasses the condition. */
         return;
     }
     if (!ctx_push_ok())
@@ -1501,11 +1607,13 @@ static void gen_do_while(ASTNode *node)
 static void gen_for(ASTNode *node)
 {
     int truth;
-    if (const_truth(node->cond, &truth) && !truth)
+    if (const_truth(node->cond, &truth) && !truth &&
+        !has_switch_label(node->body))
     {
         /* `for (i = 0; 0; i++)`: the init still runs (it may have effects),
          * the body never does. Emitting the init and nothing else is exactly
-         * what the program does. */
+         * what the program does -- unless a case label in the body is a
+         * target of an enclosing switch. */
         if (node->left != NULL)
         {
             gen_stmt(node->left);
@@ -1669,11 +1777,21 @@ static int gen_stmt_one(ASTNode *n)
         {
             emit_line(".L_case_%d_%d:", switch_id[switch_sp - 1], n->case_index);
         }
+        /* A controlled label (`if (0) case 1: stmt;`) owns the statement it
+         * names; a flat label in a switch body leaves `body` null. */
+        if (n->body != NULL)
+        {
+            return gen_stmt(n->body);
+        }
         return 0;
     case AST_DEFAULT:
         if (switch_sp > 0)
         {
             emit_line(".L_default_%d:", switch_id[switch_sp - 1]);
+        }
+        if (n->body != NULL)
+        {
+            return gen_stmt(n->body);
         }
         return 0;
     default:
@@ -1848,9 +1966,18 @@ int codegen_generate(ASTNode *root, FILE *output, TargetKind target_kind)
     defined_count = 0;
     for (ASTNode *d = root->body; d != NULL; d = d->next)
     {
-        if (d->type == AST_FUNC_DECL && d->body != NULL &&
-            defined_count < MAX_DEFINED)
+        if (d->type == AST_FUNC_DECL && d->body != NULL)
         {
+            if (defined_count == defined_capacity)
+            {
+                defined_capacity = defined_capacity > 0
+                                       ? defined_capacity * 2
+                                       : 64;
+                defined_names =
+                    xrealloc(defined_names,
+                             sizeof(*defined_names) *
+                                 (size_t)defined_capacity);
+            }
             defined_names[defined_count++] = d->name;
         }
     }

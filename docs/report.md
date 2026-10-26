@@ -12,9 +12,11 @@
 
 **Phase 9 review (CI truthfulness):** `3d41c8c` → `a77a2bc`, `205a1ad`, `bae132f` (BUG-029, BUG-030, BUG-031), 2026-10-24 16:00-16:10 +05:30. Found by *reading the CI logs instead of the README*: the repository had never had a green Windows or macOS run, so the "green on three platforms" claim was false. Run `40086581248` is the first green matrix in the project's history.
 
-**Published:** 2026-10-24 17:20 +05:30 — this ledger was kept local while it was being written (a half-finished bug list is worse than none) and is now part of the repository at the author's request. Nothing in it was rewritten for publication: the wrong tallies, the corrections, the deferred gaps and the two entries whose evidence is only code inspection are all still visible. The ledger lives in `docs/`. Three working notes stay local: `decision.md`, `learn.md` and `instructions.md`.
+**Published:** 2026-10-24 17:20 +05:30 — this ledger was kept local while it was being written (a half-finished bug list is worse than none) and is now part of the repository at the author's request. Nothing in it was rewritten for publication: the wrong tallies, the corrections, the deferred gaps and the entries whose evidence is only code inspection are all still visible. The ledger lives in `docs/`. Three working notes stay local: `decision.md`, `learn.md` and `instructions.md`.
 
-> **Honesty rules in force:** nothing is marked `FIXED` until a regression test fails-before / passes-after *and* the commit hash is recorded. `code inspection only` is stated explicitly wherever I did not execute a reproduction. Two entries still state a verification limit openly: BUG-021 (a harness defect cannot be caught by a test file - the harness run *is* the evidence), and BUG-022/023 (fixed during Phase 4; the Windows runtime evidence is real, the Linux/macOS runtime evidence is now the green CI matrix rather than a local run). BUG-018 stayed `IN PROGRESS` for two days precisely because the rule applies to it too, and it closed only when the job went green.
+**Edge-case audit (2026-10-26):** a working-tree correctness pass added tests 37–49, the same-file/temp-path contract, and entries `BUG-032`…`BUG-048`. Sixteen entries are fixed but **uncommitted** (`FIXED (working tree)`, commit `pending`) because the user withheld commit/push permission; `BUG-048` remains **OPEN**. The current suite is 106 checks, not the 81 shown in the historical verification table.
+
+> **Honesty rules in force:** nothing is marked plain `FIXED` until a regression test fails-before / passes-after *and* the commit hash is recorded. `FIXED (working tree)` is an explicit transitional status with a `pending` commit, not a claim that the change is published. `code inspection only` is stated explicitly wherever I did not execute a reproduction. Two entries still state a verification limit openly: BUG-021 (a harness defect cannot be caught by a test file - the harness run *is* the evidence), and BUG-022/023 (fixed during Phase 4; the Windows runtime evidence is real, the Linux/macOS runtime evidence is now the green CI matrix rather than a local run). BUG-018 stayed `IN PROGRESS` for two days precisely because the rule applies to it too, and it closed only when the job went green.
 
 ---
 
@@ -22,6 +24,23 @@
 
 | ID | Sev | Summary | Status | Fix commit |
 |---|---|---|---|---|
+| BUG-048 | P2 | Struct values are accepted as `if`/loop conditions and as comparison operands even though C requires scalar operands; the semantic pass still lacks those checks | OPEN | — |
+| BUG-047 | P2 | A struct-valued `?:` fell through semantic analysis as `int` and later aborted in codegen; it now gets a front-end “not supported” diagnostic | FIXED (working tree) | pending |
+| BUG-046 | P2 | Integer casts were not folded in constant expressions, so `(int)3`, `case (int)2`, and `(char)256` as a null pointer constant were rejected | FIXED (working tree) | pending |
+| BUG-045 | P0 | A NUL byte in the source silently truncated the translation unit; the input/output and temporary-output paths could also alias the source and overwrite it | FIXED (working tree) | pending |
+| BUG-044 | P1 | `extern` variables were silently emitted as definitions, several invalid `main` forms were accepted, and a nonzero integer could initialize a global pointer | FIXED (working tree) | pending |
+| BUG-043 | P1 | Darwin variadic calls did not zero `%al`, so macOS varargs could read the wrong vector-register count | FIXED (working tree) | pending |
+| BUG-042 | P1 | Calls with more than 32 arguments used a fixed codegen array; long symbols and the function-definition table also had fixed 512/256 limits | FIXED (working tree) | pending |
+| BUG-041 | P2 | Prototypes with unnamed parameters were rejected, builtin helper arity was not exact, and conflicting function declarations were not diagnosed | FIXED (working tree) | pending |
+| BUG-040 | P2 | Standard `\?` escapes were rejected and adjacent string literals were not concatenated after escape decoding | FIXED (working tree) | pending |
+| BUG-039 | P2 | Void expressions were accepted where C forbids using their value, while valid discarded contexts such as comma/`for` steps were incomplete | FIXED (working tree) | pending |
+| BUG-038 | P1 | High-byte character constants were not sign-extended as signed `char` values, and escape values above 255 were not diagnosed | FIXED (working tree) | pending |
+| BUG-037 | P1 | Unsigned usual arithmetic conversions, shift signedness, comparison result types, and constant folding could produce wrong code | FIXED (working tree) | pending |
+| BUG-036 | P0 | `if (0) case 1: stmt;` kept the labelled statement outside the `if`, so the normal false path executed it | FIXED (working tree) | pending |
+| BUG-035 | P1 | Constant-condition elimination deleted `case`/`default` labels inside a dead arm, leaving jumps to undefined assembler labels | FIXED (working tree) | pending |
+| BUG-034 | P1 | A conditional with a pointer and the null pointer constant only worked in one branch order and sometimes got the wrong type | FIXED (working tree) | pending |
+| BUG-033 | P0 | An assignment expression yielded the pre-narrowing value, so `char c; int x = (c = 300);` stored 44 in `c` but left 300 in `x` | FIXED (working tree) | pending |
+| BUG-032 | P0 | `&array` kept the decayed element-pointer type, so `&a + 1` advanced one element instead of one whole array | FIXED (working tree) | pending |
 | BUG-031 | P3 | The macOS job assembled the backend's x86-64 output as arm64 (`unrecognized instruction mnemonic: movq`), so the platform the README claims support for could not run the suite | FIXED | `bae132f` |
 | BUG-030 | P3 | The optimizer parity check shells out to `cmp`, CI's MSYS2 did not install diffutils, and the failure was reported as "optimized and --no-opt print different output" - a missing package wearing a codegen bug's clothes | FIXED | `bae132f` |
 | BUG-029 | P0 | The toy language parsed every integer literal as base 10, so `say 0x10` printed `0` - hex and octal accepted, silently wrong | FIXED | `a77a2bc` |
@@ -54,9 +73,11 @@
 | BUG-002 | P0 | `a[i++]++` evaluates the subscript twice and increments `i` twice | FIXED | `4c3cd8a` |
 | BUG-001 | P0 | `a[i++] += 5` evaluates the subscript twice and increments `i` twice | FIXED | `4c3cd8a` |
 
-**Counts:** 11 × P0 · 6 × P1 · 6 × P2 · 8 × P3 · **31 logged, 31 fixed, 0 open.** (BUG-018 closed on CI evidence 2026-10-24 16:10 +05:30.)
+**Counts:** 15 × P0 · 13 × P1 · 12 × P2 · 8 × P3 · **48 logged, 47 fixed (31 committed + 16 in the working tree), 1 open.** (BUG-018 closed on CI evidence 2026-10-24 16:10 +05:30; BUG-048 is the remaining open diagnostic gap.)
 
 **Correction (2026-10-24 16:20):** every count line before this one under-reported the ledger. The table has held `BUG-001` … `BUG-028` plus the three new entries, i.e. 31 rows, while the tally said "27 logged" and then "30 logged" - the table was right and the arithmetic was wrong. Re-counted from the rows themselves: 11 × P0, 6 × P1, 6 × P2, 8 × P3 = 31. The wrong numbers are left visible here rather than edited away, because a ledger whose totals are trusted without counting is the same defect class this file exists to catch.
+
+**Commit status (2026-10-26):** `BUG-032` … `BUG-047` are fixed and regression-tested in the working tree, but the user explicitly withheld permission to commit or push. Their status therefore says `FIXED (working tree)`, their *Fix commit* says `pending`, and they are **not** marked plain `FIXED`: the ledger's own honesty rule requires a commit hash before that status is used. When the batch is committed, replace `pending` with the hash and change the status to `FIXED`. `BUG-048` is a separate, genuinely open diagnostic gap; it is not part of the uncommitted fix batch.
 
 ### Verification summary (what was actually executed)
 
@@ -84,12 +105,272 @@
 | Fails-before (BUG-001) | baseline `9dfb5c2` compiler on `g[i++] += 5; return i*10 + g[0];` | baseline **30**, fixed mycc **25**, gcc **25** |
 | Fails-before (whole diff file) | baseline `9dfb5c2` on `tests/diff/01_compound_and_lvalue.c` | rejected at parse — BUG-005 (`int *slot(int)`); the numeric proof above is the substitution |
 | Target flavours | `--target=darwin` / `linux` / `windows` / `beos` | `_main`+`_fib` and no `GNU-stack` on darwin; `main`+`GNU-stack` on linux; clean error on `beos` |
+| **2026-10-26 audit build** | `C:\w64devkit\bin\gcc.exe -std=c99 -O2 -Wall -Wextra -Wpedantic -Iinclude -o mycc.exe src\*.c` | clean, no diagnostics |
+| **2026-10-26 audit suite** | `.\test.bat` | `All tests passed` - **106 PASS** checks (48 positive, 52 rejection, 6 contract assertions) |
+| **2026-10-26 audit differential/fuzz** | `$env:CC='C:\\w64devkit\\bin\\gcc.exe'; .\\difftest.bat`; `.\\fuzz.bat 700 456` | **3/3** differential programs agreed; **700/700** generated programs agreed with the reference compiler |
+| **2026-10-26 audit limits** | `git diff --check`; `--target=linux`/`darwin` assembly inspection; manual edge probes | whitespace clean; long-symbol and `%al` paths inspected; no local Linux/macOS runtime or sanitizer run |
 
-**Environment limits, stated plainly:** the Windows machine originally had no `make`, `sed`, `grep` or `uname` on `PATH` and WSL has `sed`/`grep`/`tr` but **no gcc and no make**. That changed on 2026-10-24: MSYS2 is installed at `C:\msys64`, so `make test`, `make difftest` and `make fuzz` now run locally under `PATH=C:\msys64\usr\bin;C:\msys64\ucrt64\bin`. What is still true: there is no macOS host here, so every macOS statement in this ledger rests on the CI job (now green, run `40086581248`), and the macOS *runtime* of Phase 4 paths was inspected rather than executed locally. The same applied to Phase 4's SysV and Darwin call paths until the CI jobs became the first real execution of them.
+**Environment limits, stated plainly:** on the 2026-10-26 host, `C:\w64devkit\bin\gcc.exe` is present, but the first `gcc` on `PATH` is MinGW.org 6.3 (32-bit), and `C:\msys64` and `make` are absent. A bare `difftest.bat` therefore picked a 32-bit assembler and failed on `%rax`; the 3/3 result above comes from setting `CC` to `C:\w64devkit\bin\gcc.exe`, which is also the compiler used for the clean build. This is a local toolchain-selection issue, not a compiler result. The `make` recipes were therefore not re-run in this audit; the same-file contract is mirrored into the `Makefile` but the executed evidence here is `test.bat`. What is still true: there is no macOS host here, so every macOS statement in this ledger rests on the CI job (now green, run `40086581248`), and the macOS *runtime* of Phase 4 paths was inspected rather than executed locally. The historical CI table above is retained because it describes that run, not the current extended suite.
+
+**Audit addendum (2026-10-26, working tree):** the historical table above records the 2026-10-24 verification run and its 81-check suite. The later memory/type/literal audit added tests `37`-`49`, the same-file/temp-path contract, and 17 logged entries (`BUG-032` … `BUG-048`). The current `test.bat` reports **106 PASS** (48 positive, 52 rejection, 6 contract). Sixteen of the new entries are fixed but **uncommitted**, as requested; the dashboard says `FIXED (working tree)` and their commit field says `pending`. `BUG-048` remains genuinely **OPEN**: struct conditions and struct comparisons are still accepted without a scalar-type diagnostic. The historical CI numbers are left unchanged because they describe that run, not the extended suite.
 
 ---
 
 ## Entries (newest first)
+
+### BUG-048 - struct values are still accepted as conditions and comparison operands
+
+- **Found:** 2026-10-26, while probing the remaining Phase 3 diagnostics after the type audit
+- **Severity:** P2 (invalid C is accepted; no silent wrong code is claimed, but the front end does not enforce the constraint)
+- **Short summary:** C requires the controlling expression of `if`/`while`/`do`/`for` and both operands of a comparison to have scalar type. This compiler's semantic pass checks only that the expression is not `void`, so a struct value reaches those contexts without a diagnostic. The codegen path then treats the aggregate as a scalar.
+- **Reproduction:**
+  ```c
+  struct S { int x; };
+  int main(void) {
+      struct S a; struct S b;
+      a.x = 1; b.x = 2;
+      if (a) return 1;          /* invalid C: struct condition */
+      if (a == b) return 2;     /* invalid C: struct comparison */
+      return 0;
+  }
+  ```
+  - observed: both constructs are accepted; the program compiles
+  - expected: a front-end diagnostic for a non-scalar condition/comparison operand
+- **Root cause:** `src/semantic.c:check_stmt()` calls `check_value()` for conditions, which rejects only `void`; the `AST_BINARY_OP` path also has no aggregate-operand rejection. Struct assignments and struct member access are legal elsewhere, so the check has to be specific to scalar-required contexts rather than “structs are never values.”
+- **Evidence:** manual probe compiled with the working-tree binary; no regression test yet.
+- **Fix plan:** add a scalar-context helper for conditions (and the switch controlling expression) that rejects `TYPE_STRUCT`, and reject struct operands in non-comma binary expressions, especially comparisons; add `tests/errors/struct_condition.c` and `struct_comparison.c`.
+- **Status:** OPEN
+- **Fix commit:** —
+- **Regression test:** none yet
+- **Why it is recorded rather than hidden:** the roadmap's Phase 3 checklist is complete, but “checklist complete” is not the same as “every invalid C construct is diagnosed.” This entry is the honest remainder.
+
+### BUG-047 - a struct-valued conditional fell through semantic analysis and aborted in codegen
+
+- **Found:** 2026-10-26, by compiling `a = 1 ? a : b;` with two struct objects during the memory/type audit
+- **Severity:** P2 (valid C is unsupported, but the failure was an internal codegen abort rather than an actionable front-end diagnostic)
+- **Short summary:** when both arms of `?:` had struct type, the conditional fallback claimed `int`; the assignment then looked like `struct = int`, and the compiler either produced a misleading type error or reached a codegen abort. Struct-valued conditionals remain outside the subset, but they must be refused at semantic analysis.
+- **Reproduction:**
+  ```c
+  struct S { int x; };
+  int main(void) {
+      struct S a; struct S b;
+      a.x = 1; b.x = 2;
+      a = 1 ? a : b;
+      return a.x;
+  }
+  ```
+  - observed before the fix: internal failure/`compilation aborted during semantic analysis`
+  - expected and observed now: `error: struct-valued conditional expressions are not supported`
+- **Root cause:** `src/semantic.c:check_expr()` had no struct/struct branch for `AST_TERNARY`; the generic fallback chose `int`, losing the real type. `src/codegen.c:gen_ternary()` has no struct-copy value model, so it could only abort.
+- **Fix:** detect two struct arms in `check_expr()`, report the unsupported construct, and keep the struct type so later checks do not invent a scalar conversion. This is a diagnostic fix, not full struct-value support.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** none yet; the limitation is still visible in the deferred-gap section. The manual probe above is the evidence.
+
+### BUG-046 - integer casts were not constant expressions, so valid globals and case labels were rejected
+
+- **Found:** 2026-10-26, while auditing constant folding after the unsigned/type fixes
+- **Severity:** P2 (valid C rejected; no wrong code)
+- **Short summary:** `int g = (int)3;`, `case (int)2:`, and `(char)256` used as a null pointer constant were folded as “not a constant expression.” The cast node was not handled by `fold_const()`, and `fold_literal()` skipped nodes whose `val_type` was not plain `int`.
+- **Reproduction:**
+  ```c
+  int g = (int)3;
+  int h = (char)300;
+  int main(void) {
+      switch (2) { case (int)2: g += 1; break; default: return 1; }
+      return g == 4 && h == 44 ? 0 : 2;
+  }
+  ```
+  - observed before: `error: global initializer is not a constant expression` / rejected `case`
+  - expected and observed now: exit 0; `(char)300` is 44 and `(char)256` folds to the null pointer constant
+- **Root cause:** `src/semantic.c:fold_const()` had no `AST_CAST` arm, and `fold_literal()` bailed out before folding casts to `char`/`unsigned char`. Global and case expressions were folded before their types had been checked, which hid the converted result.
+- **Fix:** fold casts to integer/character target types; leave pointer casts non-integer; run `check_value()` before folding global initializers and case labels so the cast and unsigned types are known.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/46_constant_casts.c` (global, case, null-pointer and narrowing cases) and the global/case portion of `tests/48_unsigned_arithmetic_types.c`.
+
+### BUG-045 - source NULs truncated the program, and output aliases could overwrite the source
+
+- **Found:** 2026-10-26, by probing `read_file()` and the `-o`/temporary-file path
+- **Severity:** P0 (source destruction or silently compiling only a prefix)
+- **Short summary:** an embedded NUL made the lexer stop at that byte, so the compiler could accept a truncated program without warning. Separately, `mycc foo.c -o .\foo.c` and a source named like `foo.s.mycc-tmp` could pass the exact-string guard and be truncated or replaced by the temporary assembly.
+- **Reproduction:**
+  - a source file containing `int main(void) { return 0; }\0int broken` compiled only the prefix
+  - `mycc foo.c -o .\foo.c` was not rejected when the strings differed
+  - `mycc foo.s.mycc-tmp -o foo.s` opened the source path as the temporary output
+- **Root cause:** `read_file()` appended a terminator without checking for NUL bytes; the same-file check used only `strcmp`; the temporary path was constructed without checking whether it named the input.
+- **Fix:** reject embedded NULs in `src/main.c`; compare output and temporary paths with canonical/POSIX-identity checks (`_fullpath` + case-insensitive compare on Windows, `stat` dev/inode elsewhere); reject the temporary-source collision before opening the temp file.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `test.bat` `:same_file_contract` and the mirrored `Makefile` contract cover alternate output spellings and temp-name collisions; the NUL check was verified by a manual probe. Windows canonical comparison still does not resolve every hard-link/8.3 alias.
+
+### BUG-044 - declaration validation accepted invalid extern variables, main forms, and global pointer initializers
+
+- **Found:** 2026-10-26, during the declaration/initializer audit
+- **Severity:** P1 (silent symbol/ABI mistakes and invalid programs accepted)
+- **Short summary:** `extern int x;` was parsed and then emitted as a zero-filled definition instead of being refused; `void main`, `unsigned main`, and prototype-only `main` were not all rejected; and a global pointer could be initialized from a nonzero integer such as `int *p = 1;`.
+- **Reproduction:**
+  ```c
+  extern int shared;              /* silently defined here */
+  int *p = 1;                     /* accepted without a cast */
+  void main(void) { }             /* accepted */
+  ```
+  - observed before: each compiled or produced a misleading downstream failure
+  - expected and observed now: clean compile-time diagnostics
+- **Root cause:** `extern` was tracked only for functions; `main` validation checked existence but not every return/body form; global initializers were folded for a value but not checked against the destination type.
+- **Fix:** reject `extern` variables explicitly; require non-unsigned `int main` with a body; call `types_compatible()` on global initializers and diagnose a nonzero integer-to-pointer conversion.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/errors/extern_variable.c`, `main_unsigned.c`, `main_void.c`, `prototype_only_main.c`, and `global_pointer_from_int.c`.
+
+### BUG-043 - Darwin variadic calls did not zero `%al`
+
+- **Found:** 2026-10-26, by inspecting `gen_call()` for each target after the ABI review
+- **Severity:** P1 (wrong varargs on macOS; Windows was unaffected)
+- **Short summary:** the `%al` zeroing was gated on Linux only (`target != WINDOWS && target != DARWIN`). Darwin also uses the SysV `%al` convention for variadic calls, so a call such as `printf("%lld\n", x)` could present a garbage vector-register count.
+- **Reproduction:** inspect the output of `mycc --target=darwin tests/28_extern_printf.c -o build\ep.s`; before the fix the call site had no `movb $0, %al`.
+- **Root cause:** the target condition treated Darwin as if it followed the Windows convention for `%al`, even though Darwin uses the SysV register convention and only differs in symbol spelling/sections.
+- **Fix:** zero `%al` for every non-Windows target.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** assembly inspection only (`--target=darwin`); no local macOS runtime was available. The existing Windows/Linux call tests remain green.
+
+### BUG-042 - fixed-size codegen arrays and symbol buffers truncated valid programs
+
+- **Found:** 2026-10-26 by probing 40-argument calls and 600-character identifiers
+- **Severity:** P1 (valid calls could lose arguments; long symbols could be truncated)
+- **Short summary:** `gen_call()` collected at most 32 arguments into a fixed array, so later arguments were not passed correctly. `sym_name()`/`call_target()` used 512-byte static buffers, and the internal-definition table was capped at 256 names; long symbols or many functions could be emitted under the wrong name or routed through `@PLT` unnecessarily.
+- **Reproduction:** `tests/37_wide_calls.c` calls a 40-parameter function; a generated 601-character function name was used to inspect Linux/Darwin symbol spelling.
+- **Root cause:** fixed compile-time limits in `src/codegen.c` that were never part of the language limit.
+- **Fix:** count and allocate call arguments dynamically; grow `sym_name()`/`call_target()` buffers to fit the name; replace `defined_names[MAX_DEFINED]` with a dynamically grown table.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/37_wide_calls.c`; the long-name path was verified by inspecting generated Linux/Darwin assembly (ignored `build/audit` probe).
+
+### BUG-041 - unnamed prototype parameters, builtin arity, and conflicting redeclarations were not checked correctly
+
+- **Found:** 2026-10-26 during prototype/call auditing
+- **Severity:** P2 (valid prototypes rejected; invalid calls/redeclarations accepted)
+- **Short summary:** `int f(int, char *);` was rejected even though parameter names are optional in prototypes; the rewritten `print_*` helpers accepted extra arguments; and a second declaration with a different return or parameter type could replace the first without a diagnostic.
+- **Reproduction:**
+  ```c
+  int f(int, int);
+  int f(int a, int b) { return a + b; }   /* valid */
+  /* print_int(1, 2) must be rejected; conflicting declarations must be rejected */
+  ```
+- **Root cause:** the parameter parser required an identifier, the builtin metadata did not enforce exact arity during calls, and `symbol_insert()`/function declaration handling did not compare an existing signature.
+- **Fix:** track `is_unnamed` on `AST_PARAM`, allow omission in prototypes but reject it in definitions, mark rewritten helpers as exact-arity, and diagnose conflicting return/parameter types for function redeclarations.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/38_unnamed_proto.c`, `tests/errors/unnamed_definition.c`, `builtin_extra_arg.c`, `conflicting_param_type.c`, and `conflicting_return_type.c`.
+
+### BUG-040 - `\?` and adjacent string literals were missing from the literal implementation
+
+- **Found:** 2026-10-26 while checking the C escape set and translation phase 6
+- **Severity:** P2 (valid C rejected)
+- **Short summary:** `'\?'` and `"what\?"` were reported as unknown escapes, and `"ab" "cd"` was a syntax error rather than the single literal `"abcd"`.
+- **Reproduction:** `tests/47_question_escape.c` and `tests/49_adjacent_strings.c`.
+- **Root cause:** `read_escape()` omitted the standard `?` case; `parse_primary()` consumed exactly one `TOKEN_STRING` and never looked for a following string token.
+- **Fix:** accept `\?`; concatenate adjacent decoded string tokens in `parse_primary()` before building the AST string, preserving explicit length and embedded NULs.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/47_question_escape.c` and `tests/49_adjacent_strings.c` (including `"\0" "A"` and two empty literals).
+
+### BUG-039 - void values were accepted in some value contexts and rejected in some discarded contexts
+
+- **Found:** 2026-10-26 while probing C’s discarded-value and comma/cast rules
+- **Severity:** P2 (constraint checking could accept invalid C or reject valid C)
+- **Short summary:** the semantic pass did not consistently enforce that a void expression may not be used as a value, while valid uses such as a discarded `(void)f()`, a comma left operand, or a `for` step could be rejected after the first tightening attempt.
+- **Reproduction:** `tests/41_void_expressions.c` covers the valid contexts; `tests/errors/void_value.c` and `void_cast_value.c` cover value uses.
+- **Root cause:** `check_expr()`/`check_value()` treated every expression uniformly; only some callers knew whether a value was actually consumed.
+- **Fix:** add `check_value()` at value-consuming sites (assignment, return, arguments, arithmetic, conditions, initializers) while leaving expression statements, comma left sides, `for` steps, and casts to `void` in the discarded-value path.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/41_void_expressions.c`, `tests/errors/void_value.c`, and `tests/errors/void_cast_value.c`.
+
+### BUG-038 - high-byte character constants and escape ranges had the wrong value
+
+- **Found:** 2026-10-26 by comparing `'\x80'`, `'\200'`, and `'\377'` with signed-char gcc behavior
+- **Severity:** P1 (wrong integer values; a valid-character edge silently changed)
+- **Short summary:** decoded character constants were left as unsigned bytes, so `'\xff'` became 255 instead of -1 under this compiler's signed `char`. Hex/octal escapes above 255 were also accepted or truncated inconsistently instead of being diagnosed.
+- **Reproduction:** `tests/40_char_constant_values.c` checks `'\x80' == -128`, `'\xff' == -1`, and that string bytes stay raw; `tests/errors/escape_out_of_range.c` checks an oversized escape.
+- **Root cause:** the lexer stored the decoded byte without applying the language's signed-`char` value, and the escape decoder did not reject values outside the byte range.
+- **Fix:** sign-extend high-byte character constants; reject numeric escapes above 255; keep string bytes unsigned/raw.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/40_char_constant_values.c` and `tests/errors/escape_out_of_range.c`.
+
+### BUG-037 - unsigned conversions, shift signedness, and constant folding could produce wrong code
+
+- **Found:** 2026-10-26 by probing `unsigned int` expressions against gcc and by auditing `binary_is_unsigned()` call sites
+- **Severity:** P1 (silent wrong code for valid unsigned programs)
+- **Short summary:** `?:` used the left branch’s type instead of the usual arithmetic conversions; non-pointer `+`/`-` always returned `int`; comparisons/logicals were not consistently typed; a shift’s signedness was taken from the right operand, so `-1 >> u` could become logical; and constant folding ignored unsignedness, including in global initializers and `case` labels.
+- **Reproduction:** `tests/48_unsigned_arithmetic_types.c`; examples include `(0 - (unsigned)2) / 2`, `(i >> s) / 2` where `i` is `-2` and `s` is unsigned, and global/case expressions such as `((unsigned)-1 > 0)`.
+- **Root cause:** the semantic result-type rules were written for signed `int` and reused the left operand or the wrong operand; `fold_const()` used host signed operations while codegen used the type only for instruction selection.
+- **Fix:** apply usual arithmetic conversions to `?:`, `+`/`-`, and arithmetic operands; type comparisons/logicals as `int`; derive shift type and signedness from the promoted left operand only; make constant folding unsigned-aware after expressions are type-checked.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/48_unsigned_arithmetic_types.c`, plus the existing `tests/18_unsigned.c`.
+
+### BUG-036 - a labelled statement in a controlled body escaped the `if`/loop
+
+- **Found:** 2026-10-26 via `if (0) case 1: stmt;` inside a switch
+- **Severity:** P0 (silent wrong code on the normal false path)
+- **Short summary:** the parser kept a `case`/`default` label and the statement after it as flat siblings. Inside a switch list that is harmless fallthrough, but when the label is the single body of an `if` or loop, the following statement was not under that control construct, so `if (0)` still executed it.
+- **Reproduction:** `tests/45_label_controlled_statement.c`, first case: `switch (2) { case 2: if (0) case 1: r = 5; r += 1; }` must leave `r == 1`, not `r == 5`.
+- **Root cause:** `parse_controlled_statement()` did not exist; `parse_if`/`while`/`do`/`for` called `parse_statement()` directly, which returned a flat label node.
+- **Fix:** add a controlled-statement parser that nests consecutive labels and attaches the following statement to the label body; update semantic/switch collection, termination analysis, codegen, optimizer scans, and AST dump to traverse that link; cap consecutive label chains at `MYCC_MAX_NEST`.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/45_label_controlled_statement.c` (if/else/while/for/do and true/false paths).
+
+### BUG-035 - constant-condition elimination removed switch labels from dead arms
+
+- **Found:** 2026-10-26 by compiling a `case` label inside `if (0)`, `while (0)`, and `for (;0;)`
+- **Severity:** P1 (assembler error / missing jump target)
+- **Short summary:** codegen skipped a constant-dead arm entirely, including any `case`/`default` label inside it. A switch jump could still target that label, producing an undefined assembler symbol or losing the arm’s body.
+- **Reproduction:** `tests/44_switch_labels_in_dead_code.c` covers labels in dead `if`, `while`, `for`, and `else` arms, including `default`.
+- **Root cause:** `gen_if`/`gen_while`/`gen_for` used `const_truth()` and emitted only the live arm; they did not ask whether the dead subtree contained a label belonging to the enclosing switch. Nested switches must not count.
+- **Fix:** add `has_switch_label()` and keep the dead arm when it contains an enclosing switch’s label; update the traversal so a nested `switch` owns its own labels.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/44_switch_labels_in_dead_code.c`.
+
+### BUG-034 - pointer conditionals only handled the null pointer constant in one branch order
+
+- **Found:** 2026-10-26 by swapping `c ? 0 : p` and `c ? p : 0`
+- **Severity:** P1 (wrong conditional type; valid C rejected or mis-scaled)
+- **Short summary:** the semantic code recognized a pointer/null combination only when the pointer was on a particular side, and assigned the conditional a scalar type in the other order. Assignment and later pointer arithmetic then used the wrong conversion.
+- **Reproduction:** `tests/43_ternary_null_pointer.c` checks both branch orders, both constant `c` values, and comparison with `0`.
+- **Root cause:** the `AST_TERNARY` type rules tested one arm and fell back to the other without a symmetric null-pointer-constant predicate.
+- **Fix:** test both arms for the null pointer constant, choose the pointer arm’s type regardless of order, and diagnose pointer/integer combinations that are not null.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/43_ternary_null_pointer.c`.
+
+### BUG-033 - assignment expressions returned the pre-conversion value
+
+- **Found:** 2026-10-26 via `char c; int x = (c = 300);`
+- **Severity:** P0 (silent wrong code in a valid expression)
+- **Short summary:** the store truncated to the lvalue, but `%rax` still held the original value, so the assignment expression evaluated to 300 even though `c` contained 44. The same problem affected compound assignment, prefix/postfix `++`/`--`, and stores through pointers.
+- **Reproduction:** `tests/42_assignment_values.c` covers `char`/`unsigned char`, simple/compound assignment, pointers, `++`/`--`, and `255`/`256` boundaries.
+- **Root cause:** `gen_assign()`/`gen_compound_assign()` emitted the store but did not sign- or zero-extend the stored byte back into `%rax`; the AST value was assumed to be the original expression value.
+- **Fix:** add `convert_assignment_value()` and apply it after every scalar store path, including indirect stores and compound assignments.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/42_assignment_values.c`.
+
+### BUG-032 - `&array` lost its pointer-to-array type
+
+- **Found:** 2026-10-26 by probing `&a + 1` for an `int a[4]`
+- **Severity:** P0 (silent wrong pointer arithmetic)
+- **Short summary:** `&a` was typed as `int *` (the decayed element pointer), so `&a + 1` advanced four bytes instead of one whole array. The same error affected `char` arrays and pointer differences.
+- **Reproduction:** `tests/39_pointer_to_array.c`: `(int *)(&a + 1) == a + 4`, `(char *)(&b + 1) == b + 3`, and `(&a + 1) - &a == 1`.
+- **Root cause:** address-of used the operand’s decayed expression type rather than the array object type; pointer arithmetic then scaled by the element size instead of the array size.
+- **Fix:** type `&array` as pointer-to-array, use the array size as the pointer step, and keep explicit casts available when the program wants `int *`.
+- **Status:** FIXED (working tree, uncommitted)
+- **Fix commit:** pending
+- **Regression test:** `tests/39_pointer_to_array.c`.
 
 ### BUG-031 - the macOS job assembled the backend's x86-64 output as arm64, so the first instruction failed to parse
 
@@ -823,32 +1104,38 @@
 
 ## Deferred: known feature gaps (not bugs)
 
-These are documented limitations, not regressions. They are listed here because "known issues" must be visible, and because several of them block the show-worthy roadmap.
+These are documented limitations, not regressions. They are listed here because "known issues" must be visible, and because several of them block ordinary C. The Phase 4/5/6 features that used to be listed here (string literals, `printf`, a real external ABI, and the optimizer) now exist and have tests; the rows below are the gaps that remain after the 2026-10-26 audit.
 
 | Gap | Why it matters | Tracked as |
 |---|---|---|
-| No string literals, no `printf`/I/O | Every program's whole output is an exit code — no demo is watchable | ROADMAP Phase 4 |
-| `int` is 64-bit, not C's 32-bit | `unsigned` is 64-bit too; `%d` interop and 32-bit overflow will differ from C once libc calls land. **This is why differential programs must stay width-agnostic** | ROADMAP Phase 1 (undecided) |
+| `int` is 64-bit, not C's 32-bit | `unsigned` is 64-bit too; `%d` interop and 32-bit overflow differ from C. **This is why differential programs must stay width-agnostic** | ROADMAP Phase 1 (undecided) |
 | No struct **by value** (params/returns) | Deliberately rejected with a message pointing at `struct P *` — a clear refusal, not a miscompile (BUG-004) | ROADMAP Phase 3 decision |
-| No `sizeof`, `typedef`, `enum`, initializer lists, `goto`, `sizeof`, array parameters | Common C cannot be compiled at all | ROADMAP Phases 2/7 |
-| No preprocessor (`#define`, `#include`, `#if`) | Now one precise error at the first directive instead of a cascade (BUG-012), but any real C file still fails | ROADMAP "not supported" |
+| No array parameter declarator (`int f(int a[])`) | Valid-looking C is rejected; callers must spell the parameter as `int *a` | ROADMAP Phase 3 follow-up |
+| No pointer-to-array declarations (`int (*p)[2]`) | `&array` now has pointer-to-array type internally, but the declaration syntax cannot bind it to a named variable | ROADMAP Phase 3 follow-up |
+| No block-scope `struct` tag shadowing | An inner `struct S` tag cannot hide an outer one; the tag namespace is effectively file-wide | ROADMAP Phase 3 follow-up |
+| No array members inside structs | `struct S { int a[4]; };` is rejected, which blocks several natural layouts | ROADMAP Phase 3 follow-up |
+| `if (struct_value)` / struct comparison accepted | Invalid C reaches codegen without a scalar-context diagnostic; this is a genuine open defect, not a feature gap (see BUG-048) | **BUG-048 (OPEN)** |
+| Limited global pointer initializers | Constant global scalars and simple addresses are handled, but string/address/`(void *)0` pointer initializer forms are not all accepted | ROADMAP Phase 4 follow-up |
+| No `sizeof`, `typedef`, `enum`, initializer lists, or `goto` | Common C cannot be compiled at all; `sizeof` is especially visible in realistic code | ROADMAP Phases 2/7 |
+| No preprocessor (`#define`, `#include`, `#if`) | One precise error at the first directive instead of a cascade (BUG-012), but any real C file still fails | ROADMAP "not supported" |
 | Nesting deeper than 256 levels | A documented language limit, enforced by a clean diagnostic in the parser and in codegen (BUG-009/010) | `instructions.md` "Not supported" |
-| No floating point | No graphics/fractions demos | ROADMAP Phase 7 |
-| No optimizer, no IR | Every binop is `pushq/popq`; `f(a,b){return a*3+b;}` is 11 instructions where 3 suffice | ROADMAP Phase 5 |
-| External calls use the internal ABI | `main(argc, argv)` is rejected (BUG-014) and libc cannot be called until Phase 4 | ROADMAP Phase 4 |
+| No floating point, `long`, or `short` | No graphics/fraction/large-integer demos; all integer objects are 64-bit | ROADMAP Phase 7 |
+| No full struct-tag/scope model in diagnostics | Some invalid aggregate expressions are refused, but the scalar/aggregate constraint is not uniform yet | BUG-048 + Phase 3 follow-up |
 
 ## Deferred: process gaps
 
-Status as of 2026-10-23 after this batch — kept so the next session does not have to rediscover them.
+Status as of 2026-10-26 after the edge-case audit — kept so the next session does not have to rediscover them.
 
 | Gap | Consequence | State |
 |---|---|---|
 | Tests asserted **only** exit codes | A wrong-code bug returning a plausible number passed. BUG-001…004 and BUG-020 all did. | **Closed** for the curated set: `tests/diff/` + `difftest.sh`/`difftest.bat` + `make difftest`, run in CI on all three platforms |
-| No differential testing against `gcc` in CI | The scratch fuzz run found nothing, which is exactly why it belongs in CI | **Closed** (see above). The *generated* program fuzzer is still open — ROADMAP Phase 6 |
-| No grammar-coverage test for documented features | BUG-005 (global pointers) survived while the README advertised pointers | Partly closed: `tests/19`–`tests/25` cover the newly advertised features; no systematic doc-to-test mapping |
-| No golden `.s` files | Codegen refactors are unverified except behaviourally | Open. The differential harness reduces the risk but does not pin the emitted instructions |
-| CI has no sanitizer job and never ran the `.bat` scripts | MSan/ASan would have caught BUG-009 (array overflow) immediately | Partly closed: the Windows job now runs `make test`/`make difftest` under MSYS2; ASan job still missing |
+| No differential testing against `gcc` in CI | The scratch fuzz run found nothing, which is exactly why it belongs in CI | **Closed**: differential and generated-program fuzzing are in CI; the local audit also ran `fuzz.bat 700 456` with 700/700 agreement |
+| No grammar-coverage test for documented features | BUG-005 (global pointers) survived while the README advertised pointers | **Partly closed**: `tests/19`–`tests/25` cover the advertised memory/struct features, and `tests/37`–`tests/49` cover the new audit cases; there is still no systematic doc-to-test mapping |
+| No golden `.s` files | Codegen refactors are unverified except behaviourally | Open. The differential harness and the targeted assembly checks reduce the risk but do not pin the emitted instructions |
+| CI has no sanitizer job | ASan/MSan would have caught BUG-009 (array overflow) immediately | **Partly closed**: the Windows job runs the `.bat` scripts and the test/differential suites; an ASan job is still missing |
 | A harness bug could silently disable checks | `make test` could not match expectations on CRLF checkouts (BUG-021) | Closed for this case (`tr -d '\r'`), but the class remains: nothing tests the harness itself |
+| Audit fixes are uncommitted | The ledger cannot honestly mark `BUG-032`…`BUG-047` plain `FIXED`, because the honesty rule requires a commit hash | **Pending user permission**: statuses are `FIXED (working tree)` with `pending` commit; the user explicitly asked not to commit or push |
+| The mirrored `Makefile` contract was not run locally in this audit | `test.bat`'s same-file/temp-path contract ran, but the shell recipe is not proven on this host in this session | Open for this audit; the contract is mirrored in both files, and the next `make test` run will execute it |
 
 ---
 
@@ -866,10 +1153,26 @@ The batch was executed in one pass at the user's instruction ("fix all existing 
 
 ---
 
+## Audit batch as executed (2026-10-26)
+
+This batch was a correctness audit of the already-green compiler, not a roadmap phase. It added tests 37–49, the same-file/temp-path contract, and entries 032–047; entry 048 records the one gap that was deliberately left open. The work was grouped by failure mode:
+
+1. **Silent wrong code in common expressions:** BUG-032 (`&array` type), BUG-033 (assignment value narrowing), BUG-036 (label outside its controlled statement), BUG-037 (unsigned conversions/shifts/folding), BUG-038 (signed high-byte characters).
+2. **Wrong or missing control-flow labels:** BUG-035 (switch labels in constant-dead arms) and BUG-036 (controlled label nesting); both have dedicated regression tests.
+3. **Pointer/void/literal typing:** BUG-034 (null pointer conditional), BUG-039 (void value contexts), BUG-040 (`\?` + adjacent strings), BUG-046 (constant casts).
+4. **Diagnostics and declarations:** BUG-041 (unnamed prototypes, builtin arity, conflicting redeclarations), BUG-044 (`extern`, `main`, global pointer initializers), BUG-047 (struct conditional diagnostic).
+5. **Backend robustness and platform correctness:** BUG-042 (wide calls + long symbols), BUG-043 (Darwin `%al`), BUG-045 (NUL source and output aliases).
+6. **Deliberately left open:** BUG-048 — scalar-context checks for struct conditions/comparisons. The roadmap checklist is complete, but this diagnostic gap is real and is not being hidden behind “all fixed.”
+
+**Validation for this batch:** clean build; `test.bat` **106 PASS** (48 positive, 52 rejection, 6 contract); `difftest.bat` **3/3**; `fuzz.bat 700 456` **700/700**; `git diff --check` clean. The user withheld commit/push permission, so the 16 fixed entries remain `FIXED (working tree)` with `pending` commits and BUG-048 remains `OPEN`.
+
+---
+
 ## Changelog of this file
 
 | Date | Change |
 |---|---|
+| 2026-10-26 | Edge-case audit recorded. Entries `BUG-032`…`BUG-047` added; 16 are fixed and regression-tested in the working tree, with `pending` commit hashes because the user withheld commit/push permission. `BUG-048` (struct conditions/comparisons are still accepted) is **OPEN**. Counts re-counted from the dashboard: 15 × P0, 13 × P1, 12 × P2, 8 × P3 = **48 logged, 47 fixed (31 committed + 16 working tree), 1 open**. Tests 37–49 and the same-file/temp-path contract added; current suite **106 PASS** (48 positive, 52 rejection, 6 contract), differential 3/3, fuzz 700/700. Deferred gaps and process gaps refreshed; the historical 81-check CI table is retained as history rather than rewritten. |
 | 2026-10-24 16:15 | Phase 9 (CI truthfulness) recorded. BUG-029 (toy-language literals), BUG-030 (missing `cmp` in CI) and BUG-031 (x86-64 output assembled as arm64 on the Apple Silicon runner) added and fixed. **BUG-018 closed on evidence**: run `40086581248` is the first green matrix - Linux, Windows and macOS - in the project's history. 31 logged, 31 fixed, 0 open (the earlier tally said 30; see the correction under the dashboard). The ledger's own promise ("if the macOS job is green, this becomes FIXED") is what closed it. |
 | 2026-10-23 21:40 | Fix batch recorded. All 21 entries now carry a status, a fix commit, the real regression-test filename, and a verification note with what was actually executed. BUG-020 (double index scaling) and BUG-021 (CRLF-unsafe harness) added - both found *while* fixing, by the new differential harness and by running the harness itself. Dashboard, counts, deferred gaps and process gaps rewritten. BUG-018 stays `IN PROGRESS` until the macOS CI job is green. |
 | 2026-10-23 10:50 | File created. 19 bugs logged from the `9dfb5c2` review sweep. No fixes committed yet. |

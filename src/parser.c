@@ -34,6 +34,7 @@ static ASTNode *parse_unary_inner(void);
 static ASTNode *parse_primary(void);
 static ASTNode *parse_statement(void);
 static ASTNode *parse_statement_inner(void);
+static ASTNode *parse_controlled_statement(void);
 static ASTNode *parse_block(void);
 static ASTNode *parse_if(void);
 static ASTNode *parse_while(void);
@@ -918,6 +919,19 @@ static ASTNode *parse_primary(void)
         node->name[node->str_len] = '\0';
         node->value = -1; /* pool index, filled in by codegen */
         parser_advance();
+        /* C translation phase 6 concatenates adjacent string literals. Do it
+         * here, after escapes have been decoded, so "\0" "A" remains the
+         * two-byte literal NUL, 'A' rather than being rebuilt from text. */
+        while (parser.current.type == TOKEN_STRING)
+        {
+            size_t add = (size_t)parser.current.length;
+            node->name = xrealloc(node->name,
+                                  (size_t)node->str_len + add + 1);
+            memcpy(node->name + node->str_len, parser.current.value, add);
+            node->str_len += (int)add;
+            node->name[node->str_len] = '\0';
+            parser_advance();
+        }
     }
     else if (parser.current.type == TOKEN_IDENT)
     {
@@ -1303,6 +1317,73 @@ static ASTNode *parse_block(void)
     return block;
 }
 
+/* Parses the statement controlled by `if`, `while`, `do` or `for`.
+ *
+ * A case/default label looks like a statement to parse_statement(), but in C
+ * it labels the statement that follows it. Keeping those two flat (as the
+ * switch-body parser does) is fine inside a statement list, where the label is
+ * reached by fallthrough anyway. It is *not* fine when the label is the single
+ * body of an if or loop: `if (0) case 1: r = 5;` must keep `r = 5` inside the
+ * if, otherwise a normal false branch still executes it. Attaching the labelled
+ * statement to the label preserves the nesting without changing switch-label
+ * collection, which walks this body explicitly. */
+static ASTNode *parse_controlled_statement(void)
+{
+    if (parser.current.type != TOKEN_KEYWORD_CASE &&
+        parser.current.type != TOKEN_KEYWORD_DEFAULT)
+    {
+        return parse_statement();
+    }
+
+    /* Chain consecutive labels iteratively rather than recursively, so a long
+     * run of `case N:` labels cannot grow the C stack here. Later passes walk
+     * the resulting body links recursively, so cap the chain at the same
+     * nesting limit the rest of the compiler uses. */
+    ASTNode *first = NULL;
+    ASTNode **link = &first;
+    int labels = 0;
+    for (;;)
+    {
+        if (parser.current.type == TOKEN_KEYWORD_CASE ||
+            parser.current.type == TOKEN_KEYWORD_DEFAULT)
+        {
+            if (++labels > MYCC_MAX_NEST)
+            {
+                report_error(parser.current.line, parser.current.col,
+                             "too many consecutive case/default labels "
+                             "(limit is %d)",
+                             MYCC_MAX_NEST);
+                return NULL;
+            }
+            ASTNode *label = parse_statement();
+            if (label == NULL)
+            {
+                return NULL;
+            }
+            *link = label;
+            link = &label->body;
+
+            /* A label at the end of a block has no labelled statement. That is
+             * invalid C, but accepting it here matches the switch-body
+             * parser's tolerance. */
+            if (parser.current.type == TOKEN_RBRACE ||
+                parser.current.type == TOKEN_EOF ||
+                parser.current.type == TOKEN_KEYWORD_ELSE)
+            {
+                return first;
+            }
+            continue;
+        }
+
+        *link = parse_statement();
+        if (*link == NULL)
+        {
+            return NULL;
+        }
+        return first;
+    }
+}
+
 static ASTNode *parse_if(void)
 {
     int line = parser.current.line;
@@ -1322,14 +1403,14 @@ static ASTNode *parse_if(void)
     {
         return NULL;
     }
-    node->body = parse_statement();
+    node->body = parse_controlled_statement();
     if (node->body == NULL)
     {
         return NULL;
     }
     if (parser_match(TOKEN_KEYWORD_ELSE))
     {
-        node->right = parse_statement();
+        node->right = parse_controlled_statement();
         if (node->right == NULL)
         {
             return NULL;
@@ -1357,7 +1438,7 @@ static ASTNode *parse_while(void)
     {
         return NULL;
     }
-    node->body = parse_statement();
+    node->body = parse_controlled_statement();
     if (node->body == NULL)
     {
         return NULL;
@@ -1371,7 +1452,7 @@ static ASTNode *parse_do_while(void)
     int col = parser.current.col;
     parser_advance();
     ASTNode *node = ast_node(AST_DO_WHILE, line, col);
-    node->body = parse_statement();
+    node->body = parse_controlled_statement();
     if (node->body == NULL)
     {
         return NULL;
@@ -1459,7 +1540,7 @@ static ASTNode *parse_for(void)
     {
         return NULL;
     }
-    node->body = parse_statement();
+    node->body = parse_controlled_statement();
     if (node->body == NULL)
     {
         return NULL;
@@ -1716,18 +1797,36 @@ static int parse_param_list(ASTNode *fn)
             report_error(parser.current.line, parser.current.col,
                          "parameter has incomplete type");
         }
-        if (parser.current.type != TOKEN_IDENT)
+        /* C permits an omitted parameter name in a prototype, e.g.
+         * `int f(int, char *);`. Keep the declaration usable for type checking
+         * and argument conversion; a definition is rejected below because its
+         * body could not name the parameter. */
+        int param_line = parser.current.line;
+        int param_col = parser.current.col;
+        int unnamed = 0;
+        char *param_name;
+        if (parser.current.type == TOKEN_IDENT)
+        {
+            param_name = xstrdup(parser.current.value);
+            parser_advance();
+        }
+        else if (parser.current.type == TOKEN_COMMA ||
+                 parser.current.type == TOKEN_RPAREN)
+        {
+            param_name = xstrdup("<unnamed>");
+            unnamed = 1;
+        }
+        else
         {
             report_error(parser.current.line, parser.current.col,
-                         "expected parameter name");
+                         "expected parameter name or ','");
             return 0;
         }
-        ASTNode *param = ast_node(AST_PARAM, parser.current.line,
-                                  parser.current.col);
+        ASTNode *param = ast_node(AST_PARAM, param_line, param_col);
         param->vtype = ptype->kind;
         param->val_type = ptype;
-        param->name = xstrdup(parser.current.value);
-        parser_advance();
+        param->name = param_name;
+        param->is_unnamed = unnamed;
 
         *tail = param;
         tail = &param->next;
@@ -1755,6 +1854,22 @@ static ASTNode *parse_function_after_name(char *name, Type *ret, int line,
     if (!parse_param_list(fn))
     {
         return NULL;
+    }
+
+    /* An omitted name is fine in a prototype but not in a definition: the
+     * body would have no way to refer to the parameter. Report it at the
+     * parameter itself before parsing the body. */
+    if (parser.current.type != TOKEN_SEMICOLON)
+    {
+        for (ASTNode *p = fn->left; p != NULL; p = p->next)
+        {
+            if (p->is_unnamed)
+            {
+                report_error(p->line, p->col,
+                             "parameter name is required in a function "
+                             "definition");
+            }
+        }
     }
 
     /* Check if this is a prototype (ends with ';') or a definition (starts with '{') */
@@ -1889,6 +2004,12 @@ ASTNode *parse_program(Lexer *lexer)
          * add to the program. */
         if (parser_match(TOKEN_SEMICOLON))
         {
+            if (is_extern)
+            {
+                report_error(line, col,
+                             "'extern' is only supported on function "
+                             "declarations");
+            }
             continue;
         }
         /* Pointer declarators at file scope: `int *head;` and
@@ -1937,6 +2058,18 @@ ASTNode *parse_program(Lexer *lexer)
             if (type->kind == TYPE_VOID)
             {
                 report_error(line, col, "variable cannot have type 'void'");
+                free(name);
+                return NULL;
+            }
+            if (is_extern)
+            {
+                /* A data symbol from another translation unit is not
+                 * supported, and treating the declaration as a definition
+                 * would silently emit a zero-filled object under the same
+                 * name. Reject it instead. */
+                report_error(line, col,
+                             "'extern' is only supported on function "
+                             "declarations");
                 free(name);
                 return NULL;
             }

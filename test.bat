@@ -25,6 +25,7 @@ set FAILED=0
 for %%t in (tests\*.c) do call :positive "%%t"
 for %%t in (tests\errors\*.c) do call :error "%%t"
 call :output_file_contract
+call :same_file_contract
 call :silence_contract
 call :sign_contract
 call :myc_contract
@@ -199,6 +200,40 @@ if exist "build\contract.s" (
     goto :eof
 )
 echo PASS: failed compile leaves no output file
+goto :eof
+
+rem The output path must not alias the source through an alternate spelling,
+rem and the temporary `output.mycc-tmp` path must not alias it either. Either
+rem mistake would truncate the user's source file.
+:same_file_contract
+copy /Y tests\26_hello_world.c "build\same_file.orig" >nul 2>&1
+copy /Y tests\26_hello_world.c "build\same_file.c" >nul 2>&1
+mycc.exe "build\same_file.c" -o ".\build\same_file.c" >nul 2>&1
+if not errorlevel 1 (
+    echo FAIL: same-file guard missed an alternate path spelling
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\same_file.orig" "build\same_file.c" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: same-file compile overwrote its source
+    set FAILED=1
+    goto :eof
+)
+copy /Y tests\26_hello_world.c "build\tmp_collision.mycc-tmp" >nul 2>&1
+mycc.exe "build\tmp_collision.mycc-tmp" -o "build\tmp_collision" >nul 2>&1
+if not errorlevel 1 (
+    echo FAIL: temp-output guard missed a source-name collision
+    set FAILED=1
+    goto :eof
+)
+fc /b "build\same_file.orig" "build\tmp_collision.mycc-tmp" >nul 2>&1
+if errorlevel 1 (
+    echo FAIL: temp-output compile overwrote its source
+    set FAILED=1
+    goto :eof
+)
+echo PASS: same-file and temp-output guards protect the source
 goto :eof
 
 rem -w silences the warning channel only: the compile still succeeds and the

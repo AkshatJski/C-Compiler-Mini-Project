@@ -111,6 +111,9 @@ typedef struct ASTNode {
      * (BUG-015). Its calls also skip exact arity checking, because a variadic
      * extern (`printf`) legitimately takes more arguments than it declares. */
     int is_extern;
+    /* AST_PARAM only: the declaration omitted this parameter's name. That is
+     * legal in a prototype (`int f(int);`) but not in a definition. */
+    int is_unnamed;
     int frame_size;
     int case_index;
     struct ASTNode *left;

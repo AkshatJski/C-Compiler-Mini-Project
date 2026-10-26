@@ -501,6 +501,10 @@ void collect_switch_cases(ASTNode *body, ASTNode ***vec, int *n, int *cap)
                 *vec = xrealloc(*vec, sizeof(ASTNode *) * (size_t)(*cap));
             }
             (*vec)[(*n)++] = s;
+            /* A label can be the controlled body of an if/loop and carry a
+             * nested labelled statement. Consecutive labels must all be
+             * collected, not just the outer one. */
+            collect_switch_cases(s->body, vec, n, cap);
             break;
         case AST_BLOCK:
             collect_switch_cases(s->body, vec, n, cap);

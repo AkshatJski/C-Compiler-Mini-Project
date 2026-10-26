@@ -318,6 +318,8 @@ static void dump_node(const ASTNode *node, int depth, FILE *out)
         break;
     case AST_CASE:
     case AST_DEFAULT:
+        dump_label("body", node->body, d, out);
+        break;
     case AST_BREAK:
     case AST_CONTINUE:
         break;

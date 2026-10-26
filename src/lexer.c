@@ -292,23 +292,50 @@ static int read_escape(Lexer *lexer)
         return '\'';
     case '"':
         return '"';
+    case '?':
+        /* C99 6.4.4.4: `\?` exists so a character sequence can avoid forming
+         * a trigraph. Trigraphs are not implemented, but the escape is still
+         * ordinary C and denotes '?'. */
+        return '?';
     case 'x':
     {
         int value = 0;
         int digits = 0;
+        int out_of_range = 0;
         while (isxdigit((unsigned char)peek(lexer)))
         {
             char h = advance(lexer);
-            value = value * 16 +
-                    (isdigit((unsigned char)h) ? h - '0'
-                                               : (tolower((unsigned char)h) - 'a' + 10));
+            int digit = isdigit((unsigned char)h)
+                            ? h - '0'
+                            : (tolower((unsigned char)h) - 'a' + 10);
+            /* A byte is the only thing an escape can denote. Stop growing the
+             * value once it has overflowed so a long digit sequence cannot
+             * overflow `int`, but remember that it was too large. */
+            if (value > 0xFF)
+            {
+                out_of_range = 1;
+            }
+            else
+            {
+                value = value * 16 + digit;
+                if (value > 0xFF)
+                {
+                    out_of_range = 1;
+                }
+            }
             digits++;
         }
         if (digits == 0)
         {
             report_error(lexer->line, lexer->col, "\\x used with no digits");
+            return 0;
         }
-        return value;
+        if (out_of_range)
+        {
+            report_error(lexer->line, lexer->col,
+                         "hex escape value is too large for a byte");
+        }
+        return value & 0xFF;
     }
     default:
         /* Octal escapes: one to three digits, e.g. \0 (NUL), \101 ('A'),
@@ -324,7 +351,12 @@ static int read_escape(Lexer *lexer)
                 value = value * 8 + (advance(lexer) - '0');
                 digits++;
             }
-            return value;
+            if (value > 0xFF)
+            {
+                report_error(lexer->line, lexer->col,
+                             "octal escape value is too large for a byte");
+            }
+            return value & 0xFF;
         }
         report_error(lexer->line, lexer->col, "unknown escape sequence '\\%c'", c);
         return c;
@@ -365,6 +397,15 @@ static Token lex_char_literal(Lexer *lexer)
     else
     {
         report_error(start_line, start_col, "unterminated character literal");
+    }
+
+    /* A character constant has type int, but this compiler's `char` is signed.
+     * A single byte with the high bit set therefore denotes the corresponding
+     * negative value: '\xFF' is -1, not 255. String literals keep the raw byte
+     * and must not be sign-extended. */
+    if (value >= 0x80 && value <= 0xFF)
+    {
+        value -= 0x100;
     }
 
     char text[16];

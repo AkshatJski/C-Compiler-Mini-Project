@@ -23,11 +23,11 @@ C:\Folder D\Feature_anant\C-Compiler-Mini-Project
 
 | Number | What it is |
 |---|---|
-| **8,766** | lines of compiler (`src/` 8,337 + `include/` 429) |
-| **81** | automated checks (35 programs + 41 rejections + 5 contracts) |
-| **1,000** | random programs compared against gcc per run |
-| **31** | defects found, all fixed, each with a fails-before reproduction |
-| **33.8%** | smaller assembly than the unoptimized path (11,055 → 7,315 lines) |
+| **9,502** | lines of compiler (`src/` 9,055 + `include/` 447) |
+| **106** | automated checks (48 programs + 52 rejections + 6 contracts) |
+| **1,000** | random programs compared against gcc per CI run (700 in the local audit) |
+| **48** | defects logged: 47 fixed (16 in the working tree, pending commit), 1 open (`BUG-048`) |
+| **30.9%** | smaller assembly on the current 48-test suite (14,290 → 9,872 lines); historical 35-test snapshot was 33.8% |
 
 Plus one identifier you can be asked for and must have ready:
 `40086581248` — the first green CI run on all three platforms (2026-10-24).
@@ -40,16 +40,17 @@ macOS.
 Not "a compiler". Every CS department has one of those.
 
 You are selling: **claims that are executable**. Anybody can say "it works".
-You can say "here are 81 checks, 1,000 random programs, three green CI jobs, and
-a public ledger where all 31 bugs have a reproduction and a fix commit". That is
-the differentiator, and it is the line that makes an examiner look up.
+You can say "here are 106 checks, 1,000 random programs, three green CI jobs, and
+a public ledger where 48 bugs have a reproduction, 47 have fixes and one is
+listed as still open". That is the differentiator, and it is the line that makes
+an examiner look up.
 
 ### 0.3 The three sentences you never say
 
 | Never say | Say instead |
 |---|---|
 | "It compiles C." | "It compiles a C **subset** — here is exactly what it refuses, with a message." |
-| "It's as good as gcc." | "It is 8,766 lines you can read; gcc is millions you cannot. Different goals." |
+| "It's as good as gcc." | "It is 9,502 lines you can read; gcc is millions you cannot. Different goals." |
 | "It's finished." | "It is complete for its stated scope, and here is the future-work list." |
 
 Honesty is not a hedge here — it is the demo's whole aesthetic. A candidate who
@@ -829,12 +830,12 @@ foreach ($t in Get-ChildItem tests\*.c) {
 "optimized: $opt   no-opt: $plain   reduction: " + [math]::Round(100.0*($plain-$opt)/$plain,1) + "%"
 ```
 
-**What you should see:** `optimized: 7315   no-opt: 11055   reduction: 33.8%`
-(within a few lines of that if the suite has changed).
+**What you should see:** `optimized: 9872   no-opt: 14290   reduction: 30.9%`
+(within a few lines of that; re-run the loop rather than reciting it).
 
-**What to say:** "same 35 programs, same behaviour, one third fewer assembly
-lines. And 'same behaviour' is not a claim — every one of those programs is run
-both ways and must exit identically with byte-identical stdout."
+**What to say:** "same 48 programs, same behaviour, roughly one third fewer
+assembly lines. And 'same behaviour' is not a claim — every one of those programs
+is run both ways and must exit identically with byte-identical stdout."
 
 **Piece 1 — constant folding:**
 
@@ -998,9 +999,9 @@ Each prints one precise sentence (e.g. *"preprocessor directives are not
 supported"*, *"nesting too deep"*, *"cannot assign to an array"*).
 
 **Say:** "these are not crashes and they are not silence. The compiler's entire
-design principle is: **refuse loudly rather than emit best-effort code**. Ten of
-my 31 logged bugs were of exactly the class this prevents — programs that
-compiled and printed the wrong number."
+design principle is: **refuse loudly rather than emit best-effort code**. Fifteen
+of my 48 logged defects are P0 — the class this prevents: programs that compiled
+and printed the wrong number, or destroyed their own source."
 
 **Nesting depth (the anti-crash demo):**
 
@@ -1092,7 +1093,7 @@ is an `int`.
 
 ### 4.14 The proof machinery — what makes all of the above believable
 
-**The suite (81 checks):**
+**The suite (106 checks):**
 
 ```powershell
 .\test.bat
@@ -1111,15 +1112,19 @@ PASS: --lang=myc matches its C twin: tests\myc\literals
 All tests passed
 ```
 
-**What it is doing:** 35 positive programs (exit code **and** stdout asserted),
-41 rejection programs (compile must fail with the expected message), and 5
+**What it is doing:** 48 positive programs (exit code **and** stdout asserted),
+52 rejection programs (compile must fail with the expected message), and 6
 contract assertions. It also compiles **every** positive test twice — optimized
 and `--no-opt` — and requires identical behaviour. That parity loop is the reason
 "the optimizer is safe" is a check and not a belief.
 
 **Differential test against gcc:**
 
+If the first `gcc` on `PATH` is not the 64-bit w64devkit build (MinGW.org 6.3
+is 32-bit and cannot assemble `%rax`), set the compiler first:
+
 ```powershell
+$env:CC='C:\w64devkit\bin\gcc.exe'
 .\difftest.bat
 ```
 
@@ -1139,7 +1144,10 @@ with-gcc-and-compare check is different in kind — it is what found BUG-020,
 
 **Fuzzer — programs nobody wrote:**
 
+Use the same `CC` setting if your default `gcc` is 32-bit:
+
 ```powershell
+$env:CC='C:\w64devkit\bin\gcc.exe'
 .\fuzz.bat 300 1
 ```
 
@@ -1168,11 +1176,14 @@ explicitly *not claimed*."
 Get-Content docs\report.md -TotalCount 20
 ```
 
-**Say:** "31 bugs, every one with a reproduction, an observed-vs-expected pair, a
-root cause down to `file:function():line`, the evidence strength — **29 say
-"verified by execution", 2 say "code inspection only"** — a fix commit, and a
-regression test that fails on the old code. Nothing was deleted, including my
-own wrong tallies."
+**Say:** "48 bugs, every one with a reproduction and an observed-vs-expected
+pair; 47 are fixed and one is openly listed as open (`BUG-048`). The original 31
+entries have a fix commit and a regression test; 16 of the new fixes are in the
+working tree and marked `pending` because I was asked not to commit. The evidence
+strength is stated per entry — the original ledger had 29 'verified by
+execution' and 2 'code inspection only'; the newer batch includes an
+assembly-only check (`BUG-043`) and a manual probe for the open entry. Nothing
+was deleted, including my own wrong tallies."
 
 **The single best story in the ledger:**
 
@@ -1228,7 +1239,7 @@ teardown.
 | File | Audience | What it does | Use it? |
 |---|---|---|---|
 | `build.bat` | you | compiles `src\*.c` → `mycc.exe`, globs the file list | **yes, always first** |
-| `test.bat` | technical | 81 checks; also the opt/no-opt parity loop | yes, as the credibility close |
+| `test.bat` | technical | 106 checks; also the opt/no-opt parity loop | yes, as the credibility close |
 | `difftest.bat` | technical | mycc vs gcc on `tests\diff\*` | yes |
 | `fuzz.bat N SEED` | technical | generates N programs, compares vs gcc | yes, `fuzz.bat 300 1` |
 | `demo.bat` | non-technical | six narrated scenes, interactive name prompt | yes, for the 5-minute slot |
@@ -1256,13 +1267,14 @@ Phases 4–9, and one claim is now the opposite of the truth:
 
 | Line in the script | Says | Reality |
 |---|---|---|
-| `tour.bat:33,101` | "about 3,500 lines" | 8,766 lines (`src/` + `include/`) |
-| `tour.bat:168-169` | "src: 2,130 lines, include: 225" | 8,337 / 429 |
+| `tour.bat:33,101` | "about 3,500 lines" | 9,502 lines (`src/` + `include/`) |
+| `tour.bat:168-169` | "src: 2,130 lines, include: 225" | 9,055 / 447 |
 | `tour.bat:123` | "mycc — **never optimizes**" | it has four optimizations; this is the project's headline result |
-| `tour.bat:158` | "five independent programs" | 35 programs + 41 rejections = 81 checks |
-| `tour2.bat:191` | "about 3,500 lines of C99" | 8,766 |
+| `tour.bat:158` | "five independent programs" | 48 programs + 52 rejections = 106 checks |
+| `tour2.bat:191` | "about 3,500 lines of C99" | 9,502 |
 
-Reading "never optimizes" out loud while your slides say "33.8% smaller" is the
+Reading "never optimizes" out loud while your slides say "30.9% smaller" (the
+current 48-test measurement) is the
 one way this project can embarrass itself. Either (a) do not run them, or
 (b) read §4 instead, or (c) fix the numbers — they are five edits. Ask and I will
 patch all four files.
@@ -1280,7 +1292,7 @@ patch all four files.
 | 5 | struct copy | `rep movsb` | "one instruction, and it is a bug fix" |
 | 6 | two languages, one back end | `fc.exe /b` | "byte-identical, and here is the check that caught a bug in it" |
 | 7 | the ABI | `movq 48(%rbp)` | "5th argument on Windows lives past the shadow space" |
-| 8 | the ledger | `report.md` | "31 bugs, 29 confirmed by execution, all fixed — including my own wrong README" |
+| 8 | the ledger | `report.md` | "48 bugs: 47 fixed and one openly listed open — including my own wrong README; 16 fixes are marked pending commit" |
 
 If you only get three: **2, 6, 8**. They need no compiler knowledge at all.
 
@@ -1317,7 +1329,7 @@ future work. (§4.1)
 **"What about `double`, `sizeof`, `#include`?"** Refused with a message, on
 purpose, because miscompiling is worse than refusing. (§4.12)
 
-**"How do you know it's correct?"** Four independent layers: 81 assertions,
+**"How do you know it's correct?"** Four independent layers: 106 assertions,
 differential against gcc, 1,000 generated programs, and optimizer parity on
 every test. (§4.14)
 
@@ -1362,7 +1374,7 @@ COMPILE    .\mycc.exe prog.c -o build\prog.s
 LINK       gcc -o build\prog.exe build\prog.s
 RUN        build\prog.exe ; $LASTEXITCODE
 
-NUMBERS    8,766 lines · 81 checks · 1,000 fuzz · 31 bugs · 33.8% smaller
+NUMBERS    9,502 lines · 106 checks · 1,000 fuzz (700 local) · 48 bugs (47 fixed, 1 open) · 30.9% smaller (48-test measurement)
 CI         first green 40086581248 (2026-10-24) · Linux 44s · macOS 1m4s · Win 2m49s
 
 3 MOMENTS  caret error · fc.exe identical .s · report.md
