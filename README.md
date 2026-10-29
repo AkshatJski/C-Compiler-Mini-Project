@@ -1,5 +1,7 @@
 # mycc — A C-Subset Compiler for x86-64
 
+[![CI](https://github.com/AkshatJski/C-Compiler-Mini-Project/actions/workflows/ci.yml/badge.svg)](https://github.com/AkshatJski/C-Compiler-Mini-Project/actions/workflows/ci.yml)
+
 A small but complete compiler written in **plain C99** (no Lex, Yacc, or LLVM).
 `mycc` reads a C-subset source file and produces **x86-64 AT&T assembly**
 that assembles and runs on **Linux** (ELF, System V) and **Windows**
