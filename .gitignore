@@ -9,6 +9,12 @@ mycc.exe
 # Executables produced by the test/showcase flow
 *.exe
 
+# Loose compiler output at the repository root. The README's quick start runs
+# `mycc example.c -o demo.s` and then links `demo`, which drops two artefacts
+# next to the sources instead of in build/ (BUG-036).
+/demo.s
+/demo
+
 # ---------------------------------------------------------------------------
 # docs/ - all developer documentation lives in one folder.
 #
