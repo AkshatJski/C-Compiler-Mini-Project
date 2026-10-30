@@ -1,8 +1,11 @@
 CC       ?= gcc
 CFLAGS    = -std=c99 -O2 -Wall -Wextra -Wpedantic -g
 CFLAGS   += -Iinclude
-SRCS      = src/main.c src/lexer.c src/parser.c src/myc.c src/symtab.c \
-            src/semantic.c src/opt.c src/codegen.c src/util.c src/dump.c
+# A glob, not a hand-written list. The list is exactly what went stale when
+# src/myc.c and src/opt.c were added and a fresh clone could not link (BUG-028);
+# build.bat was fixed then and this file was not, so the same failure was still
+# one `git add src/newpass.c` away (BUG-034).
+SRCS      = $(wildcard src/*.c)
 OBJDIR    = build
 OBJS      = $(SRCS:src/%.c=$(OBJDIR)/%.o)
 TARGET    = mycc
@@ -46,7 +49,7 @@ $(OBJDIR)/%.o: src/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # --- Random-program differential testing (Phase 6) --------------------------
-# tests/diff/ holds four programs somebody thought of. tools/fuzz.c generates
+# tests/diff/ holds three programs somebody thought of. tools/fuzz.c generates
 # programs nobody thought of, and difftest.sh checks them the same way: mycc's
 # output and gcc's must return the same exit code. Deterministic in the seed,
 # so a failing case is reproducible by number.

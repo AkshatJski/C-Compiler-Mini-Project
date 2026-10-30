@@ -329,7 +329,7 @@ as a build artifact.
 
 ## Random-program testing
 
-`tests/diff/` proves mycc agrees with gcc on four programs somebody wrote down,
+`tests/diff/` proves mycc agrees with gcc on three programs somebody wrote down,
 which only covers bugs somebody thought of. `tools/fuzz.c` generates programs
 nobody wrote — a fixed skeleton (helper function, two loops, an `if`/`else`)
 with every expression, literal, comparison and loop bound chosen at random —

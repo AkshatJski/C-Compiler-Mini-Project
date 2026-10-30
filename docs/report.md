@@ -3,7 +3,7 @@
 **Project:** `C-Compiler-Mini-Project` (`mycc`, C-subset → x86-64 AT&T)
 **Baseline reviewed:** `9dfb5c2` — *docs: cover pointers/arrays/structs/unsigned; standardize the WSL setup* (branch `feature/Memory_PointerAndArray`, 2026-10-19 11:35 +05:30)
 **Phase 4 review:** `d83bc5d` → `4410784` → `831a61a` (calling convention + I/O, 2026-10-23 12:16–14:39 +05:30)
-**Review method:** full source read (4,849 LOC `src/` + 301 LOC `include/`) + 48-project test suite run + 30 adversarial programs compiled by `mycc` and by `gcc`, exit codes compared. Two further defects (BUG-020, BUG-021) were found *while fixing*, by the new differential harness and by running the harness itself. BUG-022 and BUG-023 were found by the Phase 4 pass, in the one code path Phase 4 created from scratch.
+**Review method:** full source read (4,849 LOC `src/` + 301 LOC `include/` at that baseline; the tree is 8,380 + 442 LOC today) + 48-project test suite run + 30 adversarial programs compiled by `mycc` and by `gcc`, exit codes compared. Two further defects (BUG-020, BUG-021) were found *while fixing*, by the new differential harness and by running the harness itself. BUG-022 and BUG-023 were found by the Phase 4 pass, in the one code path Phase 4 created from scratch.
 **Report opened:** 2026-10-23 10:50 +05:30 · **First fix batch completed:** 2026-10-23 12:16 +05:30
 **Correction:** an earlier revision of this line said `21:40 +05:30` for the first batch. That was wrong - commit `4c3cd8a` is timestamped 12:16 - and is left visible here rather than silently edited.
 **Phase 8 review:** `daa35b8` → `4d0154d` (the toy front end, BUG-027) and `fcb0073` (a fresh clone could not build, BUG-028), 2026-10-24 11:12-12:20 +05:30. Both were found by *running* the thing rather than reading it: BUG-027 by asking whether the equivalence contract exercised `else`, BUG-028 by cloning the published repository and following the README.
@@ -11,6 +11,8 @@
 > **How to read this file.** Entries are **newest first** (datewise, per the working agreement). The dashboard below is the ten-second view. Each entry carries: short summary → reproduction (observed vs expected) → root cause → evidence strength → fix plan (options / chosen / tradeoffs) → status / fix commit / regression test / verification. `pending` in *Fix commit* means the fix has not been committed yet.
 
 **Phase 9 review (CI truthfulness):** `3d41c8c` → `a77a2bc`, `205a1ad`, `bae132f` (BUG-029, BUG-030, BUG-031), 2026-10-24 16:00-16:10 +05:30. Found by *reading the CI logs instead of the README*: the repository had never had a green Windows or macOS run, so the "green on three platforms" claim was false. Run `40086581248` is the first green matrix in the project's history.
+
+**Tooling review (every entry point):** working tree at `bfb5f91` → `211f816` (BUG-032 … BUG-036), 2026-10-30 11:00-11:45 +05:30. Found by *running every entry point on this machine and reading what it printed*, not by reading the sources: `build.bat`, `test.bat`, `difftest.bat`, `fuzz.bat 150`, `showcase.bat`, `tour.bat`, `tour2.bat`, `make` / `make test` / `make difftest` under MSYS2, the README's own 49-line example, and the VS Code default build task. The compiler itself came out clean on all of them - 81/81 checks, three differential programs, 150 fuzz cases, exit 197 and the transcript in `demo/expected.txt` reproduced line for line - so every defect this pass found is tooling or documentation, and all five are P3.
 
 **Published:** 2026-10-24 17:20 +05:30 — this ledger was kept local while it was being written (a half-finished bug list is worse than none) and is now part of the repository at the author's request. Nothing in it was rewritten for publication: the wrong tallies, the corrections, the deferred gaps and the two entries whose evidence is only code inspection are all still visible. The ledger lives in `docs/`. Three working notes stay local: `decision.md`, `learn.md` and `instructions.md`.
 
@@ -22,6 +24,11 @@
 
 | ID | Sev | Summary | Status | Fix commit |
 |---|---|---|---|---|
+| BUG-036 | P3 | The README quick start's `demo.s` lands in the repository root and `.gitignore` did not cover `*.s`, so every `git status` showed a stray artefact one `git add -A` away from being committed | FIXED | `211f816` |
+| BUG-035 | P3 | The VS Code default build task compiled `${file}` alone with no `-Iinclude`, so Ctrl+Shift+B on any `src/*.c` died on `codegen.h: No such file or directory` | FIXED | n/a (`.vscode/` is outside the repository) |
+| BUG-034 | P3 | `Makefile` still hand-listed its ten sources while `build.bat` had been fixed to glob them, so BUG-028's failure mode was still live on the `make` path | FIXED | `211f816` |
+| BUG-033 | P3 | `README.md`, `Makefile` and `docs/instructions.md` each said `tests/diff/` holds four programs; it holds three | FIXED | `211f816` |
+| BUG-032 | P3 | A stray working-tree edit deleted the path out of `test.bat`'s first `if exist`, so cmd aborted the entire suite with "The syntax of the command is incorrect" - and took `tour.bat`, `tour2.bat` and `demo.bat` with it | FIXED | none needed (restored from `bfb5f91:test.bat`) |
 | BUG-031 | P3 | The macOS job assembled the backend's x86-64 output as arm64 (`unrecognized instruction mnemonic: movq`), so the platform the README claims support for could not run the suite | FIXED | `bae132f` |
 | BUG-030 | P3 | The optimizer parity check shells out to `cmp`, CI's MSYS2 did not install diffutils, and the failure was reported as "optimized and --no-opt print different output" - a missing package wearing a codegen bug's clothes | FIXED | `bae132f` |
 | BUG-029 | P0 | The toy language parsed every integer literal as base 10, so `say 0x10` printed `0` - hex and octal accepted, silently wrong | FIXED | `a77a2bc` |
@@ -54,7 +61,7 @@
 | BUG-002 | P0 | `a[i++]++` evaluates the subscript twice and increments `i` twice | FIXED | `4c3cd8a` |
 | BUG-001 | P0 | `a[i++] += 5` evaluates the subscript twice and increments `i` twice | FIXED | `4c3cd8a` |
 
-**Counts:** 11 × P0 · 6 × P1 · 6 × P2 · 8 × P3 · **31 logged, 31 fixed, 0 open.** (BUG-018 closed on CI evidence 2026-10-24 16:10 +05:30.)
+**Counts:** 11 × P0 · 6 × P1 · 6 × P2 · 13 × P3 · **36 logged, 36 fixed, 0 open.** (BUG-018 closed on CI evidence 2026-10-24 16:10 +05:30. BUG-032 … BUG-036 were logged and closed on 2026-10-30.)
 
 **Correction (2026-10-24 16:20):** every count line before this one under-reported the ledger. The table has held `BUG-001` … `BUG-028` plus the three new entries, i.e. 31 rows, while the tally said "27 logged" and then "30 logged" - the table was right and the arithmetic was wrong. Re-counted from the rows themselves: 11 × P0, 6 × P1, 6 × P2, 8 × P3 = 31. The wrong numbers are left visible here rather than edited away, because a ledger whose totals are trusted without counting is the same defect class this file exists to catch.
 
@@ -84,12 +91,143 @@
 | Fails-before (BUG-001) | baseline `9dfb5c2` compiler on `g[i++] += 5; return i*10 + g[0];` | baseline **30**, fixed mycc **25**, gcc **25** |
 | Fails-before (whole diff file) | baseline `9dfb5c2` on `tests/diff/01_compound_and_lvalue.c` | rejected at parse — BUG-005 (`int *slot(int)`); the numeric proof above is the substitution |
 | Target flavours | `--target=darwin` / `linux` / `windows` / `beos` | `_main`+`_fib` and no `GNU-stack` on darwin; `main`+`GNU-stack` on linux; clean error on `beos` |
+| Every entry point (2026-10-30) | `build.bat`, `test.bat`, `difftest.bat`, `fuzz.bat 150`, `showcase.bat`, `tour.bat`, `tour2.bat`, `make`/`make test`/`make difftest`, `build_pptx.py` | **all green after the BUG-032 … BUG-036 fixes**: build clean, 81 PASS, 3/3 differential, 150/150 fuzz, 197 end-to-end, both tours to completion, `make test` + `make difftest` green on the wildcard `SRCS`, 17-slide deck regenerated |
+| CI-strict build (2026-10-30) | `gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Iinclude src\*.c` | clean, no diagnostics - the Linux CI job's rule reproduced locally |
+| README example (2026-10-30) | the 49-line `struct Point` / array / pointer example from `README.md` | exits **49**, exactly as documented |
+| Out-of-scope constructs (2026-10-30) | `int a[2] = {1,2}`, `sizeof(int)`, `float f = 1.0`, `typedef int myint` | one precise error each, no cascade, no crash |
+| Fails-before (BUG-032) | `HEAD:test.bat` vs the damaged working-tree copy | damaged copy exits **255** with `The syntax of the command is incorrect.` and runs zero checks; restored copy runs **81 PASS**, exit 0 - and `tour.bat`/`tour2.bat` went from exit 255 to exit 0 with the same single change |
+| Fails-before (BUG-035) | the old task's own command: `gcc -g src\main.c -o src\main.exe` | `fatal error: codegen.h: No such file or directory`, exit 1 |
 
 **Environment limits, stated plainly:** the Windows machine originally had no `make`, `sed`, `grep` or `uname` on `PATH` and WSL has `sed`/`grep`/`tr` but **no gcc and no make**. That changed on 2026-10-24: MSYS2 is installed at `C:\msys64`, so `make test`, `make difftest` and `make fuzz` now run locally under `PATH=C:\msys64\usr\bin;C:\msys64\ucrt64\bin`. What is still true: there is no macOS host here, so every macOS statement in this ledger rests on the CI job (now green, run `40086581248`), and the macOS *runtime* of Phase 4 paths was inspected rather than executed locally. The same applied to Phase 4's SysV and Darwin call paths until the CI jobs became the first real execution of them.
 
 ---
 
 ## Entries (newest first)
+
+### BUG-036 - the README quick start drops `demo.s` into the repository root, and `*.s` was not ignored
+
+- **Found:** 2026-10-30 11:02 +05:30, in the working tree at `bfb5f91`, by running `git status` before touching anything else
+- **Severity:** P3 (repository hygiene: not a compiler defect, but the kind of untracked noise that ends up in a commit)
+- **Short summary:** `git status` showed `?? demo.s`. It is the assembly the README's quick start tells you to produce with `mycc example.c -o demo.s`, but `.gitignore` covered `build/`, `mycc`, `mycc.exe`, `*.o` and `*.exe` and not `*.s`, so a byproduct of the documented first command sits in the repository as an untracked file forever. The same command's second half (`gcc -o demo demo.s`) creates a `demo` binary with the same problem, and a careless `git add -A` publishes a 3.8 KB copy of generated assembly.
+- **Reproduction:**
+  ```
+  ./mycc example.c -o demo.s        # README quick start, exactly as written
+  git status
+  ```
+  - observed: `?? demo.s` - and `git check-ignore demo.s` exits 1 (not ignored)
+  - expected: the file is ignored, at the root, without ignoring hand-written assembly that someone may later commit under `tests/`
+- **Root cause:** `.gitignore:1-10` (before the fix). The file enumerated build outputs by *directory* (`build/`) and by *extension* only for `*.o` and `*.exe`; `.s` is the compiler's actual product, so it was the one output type with no rule at all. `demo/expected.txt` and `demo.s` look similar but are not: the first is a curated transcript, the second is machine output.
+- **Evidence:** verified by execution: `git status --porcelain` printed `?? demo.s`, and `git ls-files demo.s` printed nothing (never committed). After the fix, `git check-ignore -v demo.s` prints `.gitignore:15:/demo.s`.
+- **Fix plan:**
+  - *Problem:* a generated file has no rule, so the working tree is permanently dirty.
+  - *Options:* (a) ignore `*.s` globally - rejected: the compiler's output lives in `build/`, so a blanket rule buys nothing and would silently hide a hand-written `.s` test fixture; (b) tell readers to write to `build/demo.s` - rejected: it means editing the quick start to work around the repository's own bookkeeping; (c) **ignore the two root-level artefacts the quick start creates (`/demo.s`, `/demo`)**.
+  - *Chosen:* (c). Root-anchored, so a `.s` anywhere else - `tests/`, a new `asm/` fixture folder - is still committable.
+  - *Tradeoffs accepted:* the rule names the README's example output specifically, so if the quick start is ever renamed the rule has to move with it. That coupling is visible in the comment above the two lines, which is the point.
+- **Status:** FIXED 2026-10-30 11:30 +05:30 (working tree cleaned, `demo.s` deleted)
+- **Fix commit:** `211f816` - *fix(tooling): stop the difftest count, the Makefile source list and root .s artefacts from drifting (BUG-033, BUG-034, BUG-036)*
+- **Regression test:** `git status --porcelain` after running the README quick start - it must print nothing. There is no test file for `.gitignore`; the check is the one command above.
+
+### BUG-035 - the VS Code default build task cannot build this compiler at all
+
+- **Found:** 2026-10-30 11:20 +05:30, in the working tree at `bfb5f91`, by running the task's own command line by hand
+- **Severity:** P3 (tooling: the editor's primary build action fails on every source file)
+- **Short summary:** `.vscode/tasks.json` was an auto-generated "C/C++: gcc.exe build active file" task: `gcc -g ${file} -o ${fileDirname}\${fileBasenameNoExtension}.exe`, no `-Iinclude`, one translation unit. mycc is ten files and every one of them includes headers from `include/`, so Ctrl+Shift+B on any open `src/*.c` fails immediately with `fatal error: codegen.h: No such file or directory` - before a single line of the compiler is compiled.
+- **Reproduction:**
+  ```
+  gcc -fdiagnostics-color=always -g src\main.c -o src\main.exe
+  ```
+  - observed: `src\main.c:5:10: fatal error: codegen.h: No such file or directory`, exit 1
+  - expected: the project builds (it does, through `build.bat`)
+- **Root cause:** `.vscode/tasks.json:7-13` (before the fix). The file was generated by the debugger integration and never adapted to a multi-file program: single `${file}` input, no include path, and `-o ${fileDirname}\...` which would scatter ten `.exe` files across `src/` even if the headers resolved.
+- **Evidence:** verified by execution - the exact `command` + `args` from the old task were run verbatim and produced the fatal error quoted above. The fixed tasks were validated as JSON and their commands were run by hand (`build.bat` → `Build OK`, `test.bat` → 81 PASS).
+- **Fix plan:**
+  - *Problem:* a build task that models the wrong program shape.
+  - *Options:* (a) patch the generated task with `-Iinclude` and `"${workspaceFolder}\\C-Compiler-Mini-Project\\src\\*.c"` - rejected: `${file}` substitution and shell globbing do not mix reliably in a shell task, and Windows `cmd` does not expand globs; (b) delete the file and tell people to use the terminal - rejected: the default build action then does nothing at all; (c) **replace it with four explicit tasks that all run in the project folder**: build the compiler via `build.bat`, compile the active file *with mycc* into `build\`, run `test.bat`, run `difftest.bat`.
+  - *Chosen:* (c). The build and test tasks delegate to the batch files, so the editor cannot drift from the documented entry points again - which is precisely what BUG-028 and BUG-034 were about.
+  - *Tradeoffs accepted:* the tasks hard-code the folder name `C-Compiler-Mini-Project` (the project is a subdirectory of the workspace, not the workspace root) and the Windows batch path. A POSIX editor setup would need its own tasks; the Makefile already covers that audience.
+- **Status:** FIXED 2026-10-30 11:25 +05:30
+- **Fix commit:** n/a - `.vscode/` sits at the workspace root (`C:\Folder D\Feature_anant\.vscode`), outside the `C-Compiler-Mini-Project` repository, and is ignored by the repository's own `.gitignore:40`. The fix is on disk, not in history, and this entry says so rather than implying a commit that does not exist.
+- **Regression test:** none automatable - the task file is validated as JSON (comments stripped) and its commands are exercised by hand. The build and test tasks *are* the regression test for BUG-028/BUG-034, because they call `build.bat` and `test.bat` rather than reimplementing them.
+
+### BUG-034 - `Makefile` kept its own list of source files, so BUG-028 was still live on the `make` path
+
+- **Found:** 2026-10-30 11:10 +05:30, in `bfb5f91`, by reading the Makefile after confirming `build.bat` had been changed to a glob for exactly this reason
+- **Severity:** P3 (latent tooling defect: nothing fails today, but the next `src/*.c` file breaks `make` and not `build.bat`)
+- **Short summary:** `Makefile:4-5` named all ten sources explicitly while `build.bat:24` had been fixed (BUG-028) to let gcc glob `src\*.c`. The list is complete today, so the build is green - but the two entry points still disagree about where the file list comes from, and the POSIX path keeps the failure mode that BUG-028 exists to remove. Adding one file to `src/` would produce a fresh-clone link error under `make` with no error under `build.bat`, which is the harder version of the original bug because most of the suite is run with `make`.
+- **Reproduction:** (latent - no program fails at `bfb5f91`)
+  ```
+  # thought experiment, executed after the fix to prove the glob works:
+  ls src/*.c | wc -l     # 10
+  make clean && make && ls build/*.o | wc -l
+  ```
+  - observed at `bfb5f91`: the object list could only ever match the ten names written in the file
+  - expected (and observed after the fix): ten objects, built from whatever is actually in `src/`
+- **Root cause:** `Makefile:4-5` (before the fix). BUG-028's fix was applied to the file that failed in CI (`build.bat`) rather than to the *class* of file - every build entry point that enumerates sources. The Makefile was not failing, so it was not touched, which is exactly how a fixed bug comes back.
+- **Evidence:** code inspection plus execution of the fixed recipe: `make` now prints the link line for all ten objects and `make test` / `make difftest` are green. The defect itself is latent, so there is no failing-before run to quote and this entry does not pretend there is one.
+- **Fix plan:**
+  - *Problem:* two build systems, two sources of truth for the file list.
+  - *Options:* (a) leave it and remember to edit two files - rejected: that is the bug; (b) generate the Makefile list from `build.bat` or vice versa - rejected: a build system that parses another build system is worse than either; (c) **`SRCS = $(wildcard src/*.c)`**, the same rule `build.bat` already uses.
+  - *Chosen:* (c). One rule, two spellings (`src/*.c` and `src\*.c`), both resolved by the toolchain rather than by a human.
+  - *Tradeoffs accepted:* link order now depends on directory order instead of a deliberate listing. Nothing in this compiler depends on link order (no static initialisers, no constructor functions), and `main.c` does not need to be first. The comment above the line records why it is a glob, so the next reader does not "tidy" it back into a list.
+- **Status:** FIXED 2026-10-30 11:18 +05:30
+- **Fix commit:** `211f816` - *fix(tooling): stop the difftest count, the Makefile source list and root .s artefacts from drifting (BUG-033, BUG-034, BUG-036)*
+- **Regression test:** none that can fail before the fix, because the list is currently complete. The durable check is structural: `make` after adding a file to `src/` must link without editing the Makefile, and `make test` (91 checks) exercises the recipe on every run.
+
+### BUG-033 - three documents said `tests/diff/` holds four programs; it holds three
+
+- **Found:** 2026-10-30 11:06 +05:30, in `bfb5f91`, by counting the directory while checking the differential suite's output against the README
+- **Severity:** P3 (documentation: a verifiable number, stated wrong, in three places)
+- **Short summary:** `README.md:332` said the differential suite "proves mycc agrees with gcc on four programs somebody wrote down"; `Makefile:49` said "tests/diff/ holds four programs"; `docs/instructions.md:727` said "instead of four programs somebody wrote". `tests/diff/` contains three: `01_compound_and_lvalue.c`, `02_stack_args.c`, `03_folding.c`. `difftest.bat` prints exactly three PASS lines, and the project's own captured transcript `demo/expected.txt` already says `(tests\diff\01, 02, 03)` - so the repository disagreed with itself.
+- **Reproduction:**
+  ```
+  ls tests/diff/*.c | wc -l
+  .\difftest.bat
+  ```
+  - observed: `3`, and three `PASS:` lines
+  - expected: the documents say three
+- **Root cause:** `README.md:332`, `Makefile:49`, `docs/instructions.md:727`. The count was written when `tests/diff/` was being built up (the harness was added with `04_*` planned) and was never revisited when the directory settled at three. This is the same defect class as the tally error corrected on 2026-10-24: a number in prose that nothing recomputes.
+- **Evidence:** verified by execution - the directory count and the harness output agree on three, three separate times during this pass (`.bat`, `make difftest`, and the transcript fixture).
+- **Fix plan:**
+  - *Problem:* a count in prose with no mechanical link to the thing counted.
+  - *Options:* (a) add a fourth program so the documents become true - rejected: it papers over the drift and the number can drift again; (b) remove the number from the prose - rejected: "four programs" is doing real work, it tells the reader how thin the hand-written coverage is compared with the fuzzer; (c) **change four to three in all three places**.
+  - *Chosen:* (c). The sentence keeps its rhetorical job ("three somebody wrote, 1000 nobody wrote") *and* becomes accurate.
+  - *Tradeoffs accepted:* the number will be wrong again if a fourth program is added. `tests/diff/` is small and deliberately hand-curated, so that is a one-line edit at a moment somebody is already reading the directory.
+- **Status:** FIXED 2026-10-30 11:15 +05:30
+- **Fix commit:** `211f816` - *fix(tooling): stop the difftest count, the Makefile source list and root .s artefacts from drifting (BUG-033, BUG-034, BUG-036)* (the `docs/instructions.md` copy is fixed in the working tree only: that file is a local working note and gitignored, see `docs/report.md`'s own note on the three unpublished notes)
+- **Regression test:** none - prose. The closest mechanical check is `difftest.bat`'s own output, which prints one PASS line per program and is read by a human; making the documents assert the count would need a docs-lint step this project does not have.
+
+### BUG-032 - a stray edit deleted the path from `test.bat`'s first `if exist`, and cmd refused to run any of the 81 checks
+
+- **Found:** 2026-10-30 11:04 +05:30, in the working tree at `bfb5f91` (uncommitted), by running `test.bat` before changing anything
+- **Severity:** P3 (tooling: the primary test entry point aborts before the first check; the compiler and the committed script were both correct)
+- **Short summary:** `test.bat` was modified in the working tree in two places. Line 7 had become `if exist  (` - the path argument inside the compiler-detection block was deleted - and line 11 had become `set "CC=C:\w64devkit\bin\C:\msys64\ucrt64\bin\gcc.exegcc.exe"`, two paths spliced together. `if exist` with no filename is a syntax error in `cmd`, and it sits inside a top-level `(...)` block, so the whole script died at parse time: `The syntax of the command is incorrect.` and exit code 255, with zero tests run. Because `tour.bat` (scene 7/7), `tour2.bat` (scene 6/6) and `demo.bat` (scene 6) all end with `call test.bat`, all three walkthroughs also ended in that same one-line message, having played perfectly up to that point.
+- **Reproduction:**
+  ```
+  .\test.bat
+  ```
+  - observed (damaged copy):
+    ```
+    The syntax of the command is incorrect.
+    ```
+    exit 255, and not a single `PASS:` line
+  - observed (`HEAD` copy, run from `build\test_head.bat`):
+    ```
+    ...
+    PASS: --lang=myc matches its C twin: tests\myc\literals
+    All tests passed
+    ```
+    exit 0, **81 PASS**
+- **Root cause:** `test.bat:7` and `test.bat:11` in the working tree, introduced by an uncommitted edit. Line 7 is the interesting one: an `if exist` whose operand vanished is not a "false" condition that the block can skip, it is a parse-time syntax error for the whole compound statement - so the failure is total rather than local, and it happens before `mycc.exe` is even looked for.
+- **Evidence:** verified by execution on both copies. The comparison is exact: the damaged file exits **255** with one line of output; `bfb5f91:test.bat` exits **0** with 81 PASS. After restoring the two lines, `test.bat` (81 PASS), `tour.bat` and `tour2.bat` all exit 0 - one change, three symptoms gone.
+- **Fix plan:**
+  - *Problem:* a working-tree edit corrupted a script that four other scripts and two build systems depend on.
+  - *Options:* (a) rewrite the detection block defensively so a damaged line cannot abort the script - rejected: the damage was an editing accident, and `cmd`'s `if` syntax has no way to make a missing operand survivable; (b) delete the detection block and require `%CC%` or `gcc` on `PATH` - rejected: the block is what makes the script work on a machine without MSYS2 on `PATH`; (c) **restore the two lines from `bfb5f91:test.bat`** and re-run everything that calls it.
+  - *Chosen:* (c). The committed script was correct; the fix is to stop carrying a broken copy.
+  - *Tradeoffs accepted:* nothing new was added to prevent a repeat - `git status` is the defence, and it is the one that already showed `M test.bat` before any of this was run. Adding a `.bat` parser to CI to catch a self-inflicted edit was judged out of proportion.
+- **Status:** FIXED 2026-10-30 11:07 +05:30 - the file is byte-identical to `bfb5f91:test.bat` again, which is why `git status` no longer lists it
+- **Fix commit:** none needed - no broken version was ever committed, so there is no commit to point at. `git diff bfb5f91 -- test.bat` is empty.
+- **Regression test:** `test.bat` itself. A malformed first block fails in under a second with a message that is unmistakable once you have seen it, and the suite only prints `All tests passed` after 81 checks have actually executed. The second signal is `git status`: a modified `test.bat` before a test run is the warning.
+
 
 ### BUG-031 - the macOS job assembled the backend's x86-64 output as arm64, so the first instruction failed to parse
 
